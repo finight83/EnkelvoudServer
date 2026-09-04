@@ -627,7 +627,7 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                             </div>
                             <div class="group-controls">
                                 <span>Vol: <span id="volLabel_${escapeHtml(groupName)}">${groupVolumes[groupName]}</span>%</span>
-                                <input type="range" min="0" max="100" value="${groupVolumes[groupName]}" oninput="activeSliderGroup='${escapeHtml(groupName)}'; document.getElementById('volLabel_${escapeHtml(groupName)}').innerText=this.value;" onchange="activeSliderGroup=null; updateGroupVolume('${escapeHtml(groupName)}', this.value);">
+                                <input type="range" min="0" max="100" value="${groupVolumes[groupName]}" oninput="activeSliderGroup='${escapeHtml(groupName)}'; document.getElementById('volLabel_${escapeHtml(groupName)}').innerText = this.value; updateGroupVolume('${escapeHtml(groupName)}', this.value);" onchange="activeSliderGroup=null;">
                                 <button class="action-btn danger" onclick="deleteGroup('${escapeHtml(groupName)}')">Delete Room</button>
                             </div>
                         </div>
