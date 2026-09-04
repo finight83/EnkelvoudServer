@@ -144,11 +144,8 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
 
     let isRunning = false;
     let audioCtx = null;
-    let localAudioDecoder = null;
     let wsOrSocket = null;
-    let clockOffsetMs = 0;
     let packetCount = 0;
-    let ntpInterval = null;
     let hostVolume = 1.0;
     let hostMuted = false;
     
@@ -157,7 +154,6 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
     let nodeMuted = localStorage.getItem('enkelvoud_node_muted') === 'true';
 
     let nextPlayTime = 0;
-    const JITTER_BUFFER_SEC = 0.12;
 
     let nodeUuid = localStorage.getItem('enkelvoud_node_uuid');
     if (!nodeUuid) {
@@ -261,24 +257,6 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
             silentSource.connect(audioCtx.destination);
             silentSource.start(0);
 
-            logMessage("Initializing built-in offline audio engine...");
-            // Standalone built-in decoder stub ensuring 100% offline self-containment
-            localAudioDecoder = {
-                decode: async function(audioBytes) {
-                    // Fallback PCM / raw float parsing helper built right in
-                    const int16View = new Int16Array(audioBytes.buffer, audioBytes.byteOffset, audioBytes.byteLength / 2);
-                    const floatChannel = new Float32Array(int16View.length);
-                    for (let i = 0; i < int16View.length; i++) {
-                        floatChannel[i] = int16View[i] / 32768.0;
-                    }
-                    return {
-                        sampleRate: 48000,
-                        channelData: [floatChannel, floatChannel] // Stereo duplicated mono payload
-                    };
-                }
-            };
-            logMessage("Built-in audio decoding pipeline ready (fully offline).");
-
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             wsOrSocket = new WebSocket(`${protocol}//${ip}:${port}`);
             wsOrSocket.binaryType = 'arraybuffer';
@@ -293,20 +271,13 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
                 logMessage("WebSocket connection opened successfully.");
 
                 registerNode();
-                syncClock();
-                ntpInterval = setInterval(syncClock, 3000);
             };
 
             wsOrSocket.onmessage = async (event) => {
                 try {
                     if (typeof event.data === 'string') {
                         const msg = JSON.parse(event.data);
-                        if (msg.type === 'ntp_pong') {
-                            const t3 = Date.now();
-                            const rtt = t3 - msg.t0;
-                            clockOffsetMs = (msg.t_server - (t3 - rtt / 2));
-                            offsetVal.textContent = `${Math.round(clockOffsetMs)} ms`;
-                        } else if (msg.type === 'host_audio_sync') {
+                        if (msg.type === 'host_audio_sync') {
                             if (msg.volume !== undefined && !isNaN(parseFloat(msg.volume))) hostVolume = parseFloat(msg.volume);
                             if (msg.muted !== undefined) hostMuted = Boolean(msg.muted);
                             logMessage(`Host audio sync -> Volume: ${hostVolume}, Muted: ${hostMuted}`);
@@ -349,17 +320,8 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
         }
     }
 
-    function syncClock() {
-        if (wsOrSocket && wsOrSocket.readyState === WebSocket.OPEN) {
-            wsOrSocket.send(JSON.stringify({
-                type: 'ntp_ping',
-                t0: Date.now()
-            }));
-        }
-    }
-
     async function handleAudioPacket(buffer) {
-        if (!audioCtx || !isRunning || !localAudioDecoder) return;
+        if (!audioCtx || !isRunning) return;
 
         if (audioCtx.state === 'suspended') {
             await audioCtx.resume();
@@ -369,65 +331,51 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
             return; 
         }
 
-        const dataView = new DataView(buffer);
-        const targetPlayTimeMs = dataView.getFloat64(0, false);
-        const audioPayload = new Uint8Array(buffer, 8);
-
         try {
-            const decoded = await localAudioDecoder.decode(audioPayload);
-            handleDecodedAudioData(decoded, targetPlayTimeMs);
+            const int16View = new Int16Array(buffer);
+            if (int16View.length === 0) return;
+
+            const numSamples = int16View.length / 2; // Stereo channels
+            const sampleRate = 48000;
+            const audioBuffer = audioCtx.createBuffer(2, numSamples, sampleRate);
+            
+            const leftChannel = audioBuffer.getChannelData(0);
+            const rightChannel = audioBuffer.getChannelData(1);
+
+            for (let i = 0, j = 0; i < numSamples; i++, j += 2) {
+                leftChannel[i] = int16View[j] / 32768.0;
+                rightChannel[i] = int16View[j + 1] / 32768.0;
+            }
+
+            const source = audioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+
+            const gainNode = audioCtx.createGain();
+            let computedGain = (isFinite(hostVolume) ? hostVolume : 1.0) * (isFinite(nodeVolume) ? nodeVolume : 1.0);
+            gainNode.gain.value = isFinite(computedGain) ? computedGain : 1.0;
+
+            source.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            const currentTime = audioCtx.currentTime;
+            if (nextPlayTime < currentTime) {
+                nextPlayTime = currentTime + 0.08; // Jitter buffer buffer time
+            }
+
+            source.start(nextPlayTime);
+            nextPlayTime += audioBuffer.duration;
+
         } catch (err) {
             logMessage(`Audio processing error: ${err.message}`);
         }
-    }
-
-    function handleDecodedAudioData(decoded, targetPlayTimeMs) {
-        if (!audioCtx || !isRunning) return;
-
-        const sampleRate = decoded.sampleRate || 48000;
-        const channelDataList = decoded.channelData;
-        const numChannels = channelDataList.length;
-        const numFrames = channelDataList[0].length;
-
-        const audioBuffer = audioCtx.createBuffer(numChannels, numFrames, sampleRate);
-
-        for (let ch = 0; ch < numChannels; ch++) {
-            audioBuffer.copyToChannel(channelDataList[ch], ch);
-        }
-
-        const source = audioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-
-        const gainNode = audioCtx.createGain();
-        let computedGain = (isFinite(hostVolume) ? hostVolume : 1.0) * (isFinite(nodeVolume) ? nodeVolume : 1.0);
-        gainNode.gain.value = isFinite(computedGain) ? computedGain : 1.0;
-
-        source.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-
-        let targetTimeSec = (targetPlayTimeMs / 1000.0) - (clockOffsetMs / 1000.0);
-        const audioCtxCurrentTime = audioCtx.currentTime;
-
-        if (targetTimeSec < audioCtxCurrentTime + 0.05) {
-            targetTimeSec = audioCtxCurrentTime + JITTER_BUFFER_SEC;
-        }
-
-        if (nextPlayTime < audioCtxCurrentTime) {
-            nextPlayTime = targetTimeSec;
-        }
-
-        source.start(nextPlayTime);
-        nextPlayTime += audioBuffer.duration;
     }
 
     function stopReceiver() {
         isRunning = false;
         packetCount = 0;
         nextPlayTime = 0;
-        if (ntpInterval) clearInterval(ntpInterval);
         if (wsOrSocket) wsOrSocket.close();
         if (audioCtx) audioCtx.close();
-        localAudioDecoder = null;
 
         toggleBtn.textContent = "Start Audio Receiver";
         toggleBtn.classList.remove('connected');

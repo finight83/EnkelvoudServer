@@ -375,6 +375,7 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
         <div class="card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; padding: 15px 20px;">
             <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
                 <button class="btn-toggle" id="streamToggleBtn" onclick="toggleStreaming()">Stream: OFF</button>
+                <button class="btn-primary" id="bitrateBtn" onclick="cycleBitrate()">Bitrate: mid</button>
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <label style="font-size: 0.85rem; font-weight: 600;">Audio In:</label>
                     <select class="input-select" id="audioInputSelect" onchange="changeAudioInput(this.value)">
@@ -384,8 +385,14 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                         <option value="Stream Radio Test">Stream Radio Test</option>
                     </select>
                 </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="font-size: 0.85rem; font-weight: 600;">Buffer:</label>
+                    <input type="range" id="bufferSlider" min="0" max="200" value="0" style="accent-color: var(--accent-color); width: 90px; cursor: pointer;" oninput="document.getElementById('bufferLabel').innerText = this.value" onchange="changeBuffer(this.value)">
+                    <span style="font-size: 0.85rem; min-width: 35px;"><span id="bufferLabel">0</span>ms</span>
+                </div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
+                <button class="action-btn danger" onclick="resetDevice()" title="Reset ESP32">🔄 Reset</button>
                 <a href="/player" class="action-btn" title="Audio Player" style="text-decoration: none;">🔊 Player</a>
                 <a href="/settings" class="action-btn" title="Settings" style="text-decoration: none;">⚙️ Settings</a>
             </div>
@@ -414,7 +421,7 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
 
         <div class="card">
             <h3 style="font-size: 1rem; margin-top: 0; margin-bottom: 10px; color: var(--text-color);">Event & Error Log</h3>
-            <div class="log-window" id="logWindow">
+            <div class="log-window" id="logWindow" style="height: 40px; overflow: hidden;">
                 <div>Waiting for logs from server...</div>
             </div>
         </div>
@@ -438,6 +445,25 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
         const groupVolumes = {};
         let activeSliderGroup = null;
         let currentEditingGroup = null;
+        let isSlidingBuffer = false;
+        let currentBitrate = 'mid';
+        const bitrates = ['low', 'mid', 'high'];
+
+        async function cycleBitrate() {
+            let currentIndex = bitrates.indexOf(currentBitrate);
+            currentIndex = (currentIndex + 1) % bitrates.length;
+            currentBitrate = bitrates[currentIndex];
+            
+            const btn = document.getElementById('bitrateBtn');
+            if (btn) btn.textContent = `Bitrate: ${currentBitrate}`;
+
+            await fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'set_bitrate', bitrate: currentBitrate })
+            });
+            fetchState();
+        }
 
         function changeTheme(theme) {
             document.body.className = '';
@@ -459,16 +485,33 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
             return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         }
 
+        async function resetDevice() {
+            if (!confirm("Are you sure you want to reset the ESP32-S3 server?")) return;
+            try {
+                await fetch('/api/reset', { method: 'POST' });
+            } catch (e) {
+                // Ignore network error due to immediate restart
+            }
+            alert('Server is resetting...');
+            setTimeout(() => { window.location.reload(); }, 4000);
+        }
+
         async function fetchState() {
             if (document.getElementById('renameModal').classList.contains('active')) return;
             if (activeSliderGroup !== null) return;
 
             try {
-                const res = await fetch('/api/state?' + new Date().getTime(), { cache: 'no-store' });
+                const res = await fetch('/api/state?_=' + new Date().getTime(), { cache: 'no-store' });
                 if (!res.ok) throw new Error('Network response was not ok');
                 const data = await res.json();
                 currentNodesData = data.nodes || {};
                 
+                if (data.bitrate) {
+                    currentBitrate = data.bitrate;
+                    const btn = document.getElementById('bitrateBtn');
+                    if (btn) btn.textContent = `Bitrate: ${currentBitrate}`;
+                }
+
                 const globalMuteBtn = document.getElementById('globalMuteBtn');
                 if (data.host_muted) {
                     globalMuteBtn.textContent = "Unmute Server";
@@ -492,9 +535,14 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                     audioInputSelect.value = data.audio_input;
                 }
 
-                if (data.logs && Array.isArray(data.logs)) {
-                    logWindow.innerHTML = data.logs.map(log => `<div>${escapeHtml(log)}</div>`).join('');
-                    logWindow.scrollTop = logWindow.scrollHeight;
+                if (data.audio_buffer !== undefined && !isSlidingBuffer) {
+                    document.getElementById('bufferSlider').value = data.audio_buffer;
+                    document.getElementById('bufferLabel').innerText = data.audio_buffer;
+                }
+
+                if (data.logs && Array.isArray(data.logs) && data.logs.length > 0) {
+                    const latestLog = data.logs[data.logs.length - 1];
+                    logWindow.innerHTML = `<div>${escapeHtml(latestLog)}</div>`;
                 }
 
                 renderGroupsAndNodes(currentNodesData);
@@ -529,6 +577,18 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'set_audio_input', input: mode })
             });
+            fetchState();
+        }
+
+        async function changeBuffer(val) {
+            isSlidingBuffer = true;
+            document.getElementById('bufferLabel').innerText = val;
+            await fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'set_buffer', buffer: parseInt(val) })
+            });
+            isSlidingBuffer = false;
             fetchState();
         }
 
@@ -665,7 +725,7 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
             });
         }
 
-        setInterval(fetchState, 3000);
+        setInterval(fetchState, 10000);
         fetchState();
     </script>
 </body>

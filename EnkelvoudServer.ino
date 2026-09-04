@@ -10,8 +10,13 @@
 #include "AudioTools.h"
 #include "AudioTools/Communication/USB/USBAudioStream.h"
 #include "AudioTools/AudioCodecs/CodecOpus.h"
+#include "AudioTools/Communication/AudioHttp.h"
+
+using namespace audio_tools;
 
 Preferences preferences;
+
+const char* SETTINGS_VERSION = "v1.0.8"; 
 
 const char* default_ap_ssid = "Enkelvoud-Server";
 const char* default_ap_password = "";
@@ -25,12 +30,13 @@ WebSocketsServer webSocket(8081);
 
 AudioInfo currentAudioInfo(48000, 2, 16);
 USBAudioStream in;
-I2SStream i2s1;
-I2SStream i2s2;
+I2SStream i2s2; // Single unified DAC stream reference
 
 unsigned long totalOpusBytesStreamed = 0;
 bool hostMuted = false;
 bool serverStreamingEnabled = false;
+int serverAudioBuffer = 0;
+String serverOpusBitrate = "mid";
 
 String serverThemeMode = "theme-blue";
 String serverWifiSsid = "";
@@ -41,45 +47,46 @@ String serverStaticGw = "192.168.1.1";
 String serverStaticSn = "255.255.255.0";
 String serverStaticDns = "192.168.1.1";
 
-int pinLrc1  = 4;
-int pinDout1 = 5;
-int pinBclk1 = 6;
+int pinLrc  = 11;
+int pinDout = 12;
+int pinBclk = 13;
 
-int pinLrc2  = 11;
-int pinDout2 = 12;
-int pinBclk2 = 13;
+int pinAuxLrc = 18;
+int pinAuxDin = 23;
+int pinAuxBclk = 19;
 
-int pinAuxLrc = 15;
-int pinAuxDin = 16;
-int pinAuxBclk = 17;
-
-int pinBtLrc = 18;
-int pinBtDin = 23;
-int pinBtBclk = 19;
+int pinBtLrc  = 15;
+int pinBtDin  = 16;
+int pinBtBclk = 17;
 
 float serverVolumeMultiplier = 1.0f;
-String serverAudioInputMode = "USB";
+String serverAudioInputMode = "None";
 
 std::vector<String> recentLogs;
 const size_t maxLogs = 50;
+
+class WebSocketPrint;
+
+// Map legacy/modular references to the single unified DAC (`i2s2`)
+#define i2s1 i2s2
+#define usbToDacCopier1 usbToDacCopier
+
+#include "EVDCTRL.h"
+#include "EVDPLR.h"
+#include "EVDSET.h"
+#include "EVDUSB.h"
+#include "EVDBT.h"
+#include "EVDAUX.h"
+#include "EVDSTR.h"
 
 WebSocketPrint* wsPrint = nullptr;
 OpusAudioEncoder* opus = nullptr;
 EncodedAudioStream* encoder = nullptr;
 StreamCopy* copier = nullptr;
-StreamCopy* usbToDacCopier1 = nullptr;
-StreamCopy* usbToDacCopier2 = nullptr;
+StreamCopy* usbToDacCopier = nullptr;
 
 URLStream* radioStream = nullptr;
 StreamCopy* radioToEncoderCopier = nullptr;
-
-#include "EVDCTRL.H"
-#include "EVDPLR.H"
-#include "EVDSET.H"
-#include "EVDUSB.H"
-#include "EVDBT.H"
-#include "EVDAUX.H"
-#include "EVDSTR.H"
 
 class WebSocketPrint : public Print {
 public:
@@ -109,9 +116,37 @@ void logAction(const String& functionName, const String& eventType, const String
     }
 }
 
+void checkIncomingStream() {
+    static unsigned long lastStreamCheckTime = 0;
+    if (millis() - lastStreamCheckTime > 5000) {
+        lastStreamCheckTime = millis();
+        if (serverAudioInputMode == "USB") {
+            logAction("checkIncomingStream", "USB", "Validating USB audio stream format and packet availability.");
+        } else if (serverAudioInputMode == "Bluetooth") {
+            logAction("checkIncomingStream", "BT", "Verifying Bluetooth I2S slave clock sync and PCM data flow.");
+        } else if (serverAudioInputMode == "AUX in") {
+            logAction("checkIncomingStream", "AUX", "Inspecting AUX audio input stream state.");
+        } else if (serverAudioInputMode == "Stream Radio Test") {
+            logAction("checkIncomingStream", "STREAM", "Checking HTTP radio stream buffer and connection health.");
+        } else {
+            logAction("checkIncomingStream", "IDLE", "Audio input mode is set to None/Inactive.");
+        }
+    }
+}
+
 void loadSettings() {
-    preferences.begin("enkelvoud", true);
-    serverThemeMode = preferences.getString("theme", "theme-blue");
+    preferences.begin("enkelvoud", false);
+    String storedVersion = preferences.getString("s_ver", "");
+    
+    if (storedVersion != SETTINGS_VERSION) {
+        logAction("loadSettings", "NVM", "New firmware version detected (" + String(SETTINGS_VERSION) + "). Clearing old configuration for fresh setup.");
+        preferences.clear();
+        preferences.putString("s_ver", SETTINGS_VERSION);
+        preferences.end();
+        preferences.begin("enkelvoud", false);
+    }
+
+    serverThemeMode = preferences.getString("theme", "theme-black");
     serverWifiSsid = preferences.getString("ssid", "");
     serverWifiPass = preferences.getString("pass", "");
     serverUseStaticIp = preferences.getBool("use_static", false);
@@ -120,98 +155,59 @@ void loadSettings() {
     serverStaticSn = preferences.getString("s_sn", "255.255.255.0");
     serverStaticDns = preferences.getString("s_dns", "192.168.1.1");
 
-    pinLrc1  = preferences.getInt("lrc_1", 4);
-    pinDout1 = preferences.getInt("dout_1", 5);
-    pinBclk1 = preferences.getInt("bclk_1", 6);
-    pinLrc2  = preferences.getInt("lrc_2", 11);
-    pinDout2 = preferences.getInt("dout_2", 12);
-    pinBclk2 = preferences.getInt("bclk_2", 13);
+    pinLrc  = preferences.getInt("lrc", 11);
+    pinDout = preferences.getInt("dout", 12);
+    pinBclk = preferences.getInt("bclk", 13);
 
-    pinAuxLrc = preferences.getInt("aux_lrc", 15);
-    pinAuxDin = preferences.getInt("aux_din", 16);
-    pinAuxBclk = preferences.getInt("aux_bclk", 17);
+    pinAuxLrc = preferences.getInt("aux_lrc", 18);
+    pinAuxDin = preferences.getInt("aux_din", 23);
+    pinAuxBclk = preferences.getInt("aux_bclk", 19);
 
-    pinBtLrc = preferences.getInt("bt_lrc", 18);
-    pinBtDin = preferences.getInt("bt_din", 23);
-    pinBtBclk = preferences.getInt("bt_bclk", 19);
+    pinBtLrc  = preferences.getInt("bt_lrc", 15);
+    pinBtDin  = preferences.getInt("bt_din", 16);
+    pinBtBclk = preferences.getInt("bt_bclk", 17);
 
     serverVolumeMultiplier = preferences.getFloat("vol", 1.0f);
-    serverAudioInputMode = preferences.getString("audio_in", "USB");
+    serverAudioInputMode = preferences.getString("audio_in", "Bluetooth");
     serverStreamingEnabled = preferences.getBool("streaming", false);
+    serverAudioBuffer = preferences.getInt("audio_buf", 0);
+    serverOpusBitrate = preferences.getString("bitrate", "mid");
+    
     preferences.end();
     logAction("loadSettings", "NVM", "Settings loaded successfully from NVM.");
 }
 
 void initializeAudioObjects() {
-    if (!wsPrint) {
-        wsPrint = new WebSocketPrint();
-        logAction("initializeAudioObjects", "INIT", "WebSocketPrint initialized.");
-    }
+    if (!wsPrint) wsPrint = new WebSocketPrint();
+    if (!opus) opus = new OpusAudioEncoder();
+    if (!encoder) encoder = new EncodedAudioStream(wsPrint, opus);
+    if (!copier) copier = new StreamCopy(*encoder, in);
 
-    if (!opus) {
-        opus = new OpusAudioEncoder();
-        logAction("initializeAudioObjects", "INIT", "OpusAudioEncoder initialized.");
-    }
+    auto cfg2 = i2s2.defaultConfig(TX_MODE);
+    cfg2.pin_bck = pinBclk;
+    cfg2.pin_ws = pinLrc;
+    cfg2.pin_data = pinDout;
+    cfg2.channels = 2;
+    cfg2.bits_per_sample = 16;
+    cfg2.sample_rate = 44100;
+    i2s2.begin(cfg2);
 
-    if (!encoder) {
-        encoder = new EncodedAudioStream(wsPrint, opus);
-        logAction("initializeAudioObjects", "INIT", "EncodedAudioStream initialized.");
-    }
+    if (!usbToDacCopier) usbToDacCopier = new StreamCopy(i2s2, in);
 
-    if (!copier) {
-        copier = new StreamCopy(*encoder, in);
-        logAction("initializeAudioObjects", "INIT", "Main encoder StreamCopy initialized.");
-    }
-
-    if (!usbToDacCopier1) {
-        usbToDacCopier1 = new StreamCopy(i2s1, in);
-        logAction("initializeAudioObjects", "INIT", "USB to DAC1 StreamCopy initialized.");
-    }
-
-    if (!usbToDacCopier2) {
-        usbToDacCopier2 = new StreamCopy(i2s2, in);
-        logAction("initializeAudioObjects", "INIT", "USB to DAC2 StreamCopy initialized.");
-    }
-
-    if (!radioStream) {
-        radioStream = new URLStream(serverWifiSsid.c_str(), serverWifiPass.c_str());
-        logAction("initializeAudioObjects", "INIT", "Radio URLStream initialized.");
-    }
-
+    if (!radioStream) radioStream = new URLStream(serverWifiSsid.c_str(), serverWifiPass.c_str());
     if (!radioToEncoderCopier && radioStream && encoder) {
         radioToEncoderCopier = new StreamCopy(*encoder, *radioStream);
-        logAction("initializeAudioObjects", "INIT", "Radio to encoder StreamCopy initialized.");
     }
 }
 
-void cleanupAudioObjects() {
-    if (radioToEncoderCopier) { delete radioToEncoderCopier; radioToEncoderCopier = nullptr; }
-    if (radioStream) { delete radioStream; radioStream = nullptr; }
-    if (usbToDacCopier2) { delete usbToDacCopier2; usbToDacCopier2 = nullptr; }
-    if (usbToDacCopier1) { delete usbToDacCopier1; usbToDacCopier1 = nullptr; }
-    if (copier) { delete copier; copier = nullptr; }
-    if (encoder) { delete encoder; encoder = nullptr; }
-    if (opus) { delete opus; opus = nullptr; }
-    if (wsPrint) { delete wsPrint; wsPrint = nullptr; }
-}
-
-void handleRoot() {
-    logAction("handleRoot", "HTTP_REQ", "Serving Enkelvoud Control Panel HTML.");
-    server.send(200, "text/html", CONTROL_HTML);
-}
-
-void handlePlayer() {
-    logAction("handlePlayer", "HTTP_REQ", "Serving Audio Player HTML.");
-    server.send(200, "text/html", PLAYER_HTML);
-}
-
+void handleRoot() { server.send(200, "text/html", CONTROL_HTML); }
+void handlePlayer() { server.send(200, "text/html", PLAYER_HTML); }
 void handleSettings() {
-    logAction("handleSettings", "HTTP_REQ", "Serving Enkelvoud Server Settings page.");
     String html = getWebPageTemplate(
         serverThemeMode.c_str(), "Enkelvoud", "Enkelvoud",
         serverWifiSsid.c_str(), serverWifiPass.c_str(), serverUseStaticIp,
         serverStaticIp.c_str(), serverStaticGw.c_str(), serverStaticSn.c_str(), serverStaticDns.c_str(),
-        pinLrc1, pinDout1, pinBclk1, pinLrc2, pinDout2, pinBclk2,
+        pinLrc, pinDout, pinBclk,
         pinAuxLrc, pinAuxDin, pinAuxBclk, pinBtLrc, pinBtDin, pinBtBclk,
         serverVolumeMultiplier
     );
@@ -219,7 +215,6 @@ void handleSettings() {
 }
 
 void handleApiScanWifi() {
-    logAction("handleApiScanWifi", "WIFI", "Scanning available Wi-Fi networks...");
     int n = WiFi.scanNetworks();
     String json = "[";
     for (int i = 0; i < n; ++i) {
@@ -233,8 +228,6 @@ void handleApiScanWifi() {
 void handleApiTestWifi() {
     if (server.hasArg("plain")) {
         String body = server.arg("plain");
-        logAction("handleApiTestWifi", "WIFI", "Testing credentials connectivity...");
-
         String testSsid = "";
         String testPass = "";
 
@@ -242,18 +235,14 @@ void handleApiTestWifi() {
         if (ssidIdx != -1) {
             ssidIdx += 8;
             int endIdx = body.indexOf("\"", ssidIdx);
-            if (endIdx != -1) {
-                testSsid = body.substring(ssidIdx, endIdx);
-            }
+            if (endIdx != -1) testSsid = body.substring(ssidIdx, endIdx);
         }
 
         int passIdx = body.indexOf("\"pass\":\"");
         if (passIdx != -1) {
             passIdx += 8;
             int endIdx = body.indexOf("\"", passIdx);
-            if (endIdx != -1) {
-                testPass = body.substring(passIdx, endIdx);
-            }
+            if (endIdx != -1) testPass = body.substring(passIdx, endIdx);
         }
 
         if (testSsid.length() == 0) {
@@ -274,15 +263,10 @@ void handleApiTestWifi() {
             delay(500);
         }
 
-        if (connected) {
-            logAction("handleApiTestWifi", "WIFI", "Test connection successful for SSID: " + testSsid);
-            server.send(200, "application/json", "{\"success\":true,\"message\":\"Connected successfully\"}");
-        } else {
-            logAction("handleApiTestWifi", "WIFI", "Test connection failed for SSID: " + testSsid);
-            server.send(200, "application/json", "{\"success\":false,\"message\":\"Connection timed out or incorrect password\"}");
-        }
+        String jsonResponse = connected ? "{\"success\":true,\"message\":\"Connected successfully\"}" : 
+                                          "{\"success\":false,\"message\":\"Connection timed out or incorrect password\"}";
 
-        if (WiFi.status() == WL_CONNECTED) {
+        if (connected) {
             WiFi.enableSTA(true);
             WiFi.enableAP(false);
         } else {
@@ -290,6 +274,7 @@ void handleApiTestWifi() {
             WiFi.softAPConfig(ap_local_ip, ap_gateway, ap_subnet);
             WiFi.softAP(default_ap_ssid, default_ap_password);
         }
+        server.send(200, "application/json", jsonResponse);
     } else {
         server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid payload\"}");
     }
@@ -305,9 +290,9 @@ void handleApiVolume() {
             if (parsedVol >= 0.0f && parsedVol <= 1.0f) {
                 serverVolumeMultiplier = parsedVol;
                 preferences.begin("enkelvoud", false);
+                preferences.putString("s_ver", SETTINGS_VERSION);
                 preferences.putFloat("vol", serverVolumeMultiplier);
                 preferences.end();
-                logAction("handleApiVolume", "STATE_CHANGE", "Global volume multiplier set to: " + String(serverVolumeMultiplier));
             }
         }
     }
@@ -315,12 +300,12 @@ void handleApiVolume() {
 }
 
 void handleSaveSettings() {
-    logAction("handleSaveSettings", "NVM", "Saving configuration parameters to NVM...");
     preferences.begin("enkelvoud", false);
+    preferences.putString("s_ver", SETTINGS_VERSION);
 
     if (server.hasArg("reset_defaults") && server.arg("reset_defaults") == "on") {
-        logAction("handleSaveSettings", "NVM", "Factory reset requested. Clearing preferences...");
         preferences.clear();
+        preferences.putString("s_ver", SETTINGS_VERSION);
         preferences.end();
         server.send(200, "text/plain", "Defaults Reset and Restarting");
         delay(500);
@@ -340,17 +325,9 @@ void handleSaveSettings() {
     if (server.hasArg("static_sn")) { serverStaticSn = server.arg("static_sn"); preferences.putString("s_sn", serverStaticSn); }
     if (server.hasArg("static_dns")) { serverStaticDns = server.arg("static_dns"); preferences.putString("s_dns", serverStaticDns); }
 
-    if (server.hasArg("node_vol")) {
-        serverVolumeMultiplier = server.arg("node_vol").toFloat() / 100.0f;
-        preferences.putFloat("vol", serverVolumeMultiplier);
-    }
-
-    if (server.hasArg("lrc_1")) { pinLrc1 = server.arg("lrc_1").toInt(); preferences.putInt("lrc_1", pinLrc1); }
-    if (server.hasArg("dout_1")) { pinDout1 = server.arg("dout_1").toInt(); preferences.putInt("dout_1", pinDout1); }
-    if (server.hasArg("bclk_1")) { pinBclk1 = server.arg("bclk_1").toInt(); preferences.putInt("bclk_1", pinBclk1); }
-    if (server.hasArg("lrc_2")) { pinLrc2 = server.arg("lrc_2").toInt(); preferences.putInt("lrc_2", pinLrc2); }
-    if (server.hasArg("dout_2")) { pinDout2 = server.arg("dout_2").toInt(); preferences.putInt("dout_2", pinDout2); }
-    if (server.hasArg("bclk_2")) { pinBclk2 = server.arg("bclk_2").toInt(); preferences.putInt("bclk_2", pinBclk2); }
+    if (server.hasArg("lrc")) { pinLrc = server.arg("lrc").toInt(); preferences.putInt("lrc", pinLrc); }
+    if (server.hasArg("dout")) { pinDout = server.arg("dout").toInt(); preferences.putInt("dout", pinDout); }
+    if (server.hasArg("bclk")) { pinBclk = server.arg("bclk").toInt(); preferences.putInt("bclk", pinBclk); }
 
     if (server.hasArg("aux_lrc")) { pinAuxLrc = server.arg("aux_lrc").toInt(); preferences.putInt("aux_lrc", pinAuxLrc); }
     if (server.hasArg("aux_din")) { pinAuxDin = server.arg("aux_din").toInt(); preferences.putInt("aux_din", pinAuxDin); }
@@ -360,16 +337,23 @@ void handleSaveSettings() {
     if (server.hasArg("bt_din")) { pinBtDin = server.arg("bt_din").toInt(); preferences.putInt("bt_din", pinBtDin); }
     if (server.hasArg("bt_bclk")) { pinBtBclk = server.arg("bt_bclk").toInt(); preferences.putInt("bt_bclk", pinBtBclk); }
 
-    preferences.end();
+    if (server.hasArg("node_vol")) {
+        serverVolumeMultiplier = server.arg("node_vol").toFloat() / 100.0f;
+        preferences.putFloat("vol", serverVolumeMultiplier);
+    }
 
+    preferences.end();
     server.send(200, "text/plain", "Saved and Restarting");
     delay(500);
     ESP.restart();
 }
 
-void handleCancelSettings() {
-    logAction("handleCancelSettings", "HTTP_REQ", "Settings change reverted.");
-    server.send(200, "text/plain", "Cancelled");
+void handleCancelSettings() { server.send(200, "text/plain", "Cancelled"); }
+void handleApiReset() {
+    logAction("handleApiReset", "SYS", "Manual reset requested via control panel.");
+    server.send(200, "application/json", "{\"status\":\"resetting\"}");
+    delay(500);
+    ESP.restart();
 }
 
 void handleApiState() {
@@ -377,6 +361,8 @@ void handleApiState() {
     json += "\"host_muted\": " + String(hostMuted ? "true" : "false") + ",";
     json += "\"streaming_enabled\": " + String(serverStreamingEnabled ? "true" : "false") + ",";
     json += "\"audio_input\": \"" + serverAudioInputMode + "\",";
+    json += "\"audio_buffer\": " + String(serverAudioBuffer) + ",";
+    json += "\"bitrate\": \"" + serverOpusBitrate + "\",";
     json += "\"logs\": [";
     for (size_t i = 0; i < recentLogs.size(); ++i) {
         String logLine = recentLogs[i];
@@ -394,67 +380,81 @@ void handleApiState() {
 void handleApiControl() {
     if (server.hasArg("plain")) {
         String body = server.arg("plain");
-        logAction("handleApiControl", "API_POST", "Received control action: " + body);
-
         if (body.indexOf("toggle_host_mute") != -1) {
             hostMuted = !hostMuted;
-            logAction("handleApiControl", "STATE_CHANGE", "Host Mute toggled to: " + String(hostMuted ? "MUTED" : "UNMUTED"));
         }
         else if (body.indexOf("toggle_streaming") != -1) {
             serverStreamingEnabled = !serverStreamingEnabled;
             preferences.begin("enkelvoud", false);
+            preferences.putString("s_ver", SETTINGS_VERSION);
             preferences.putBool("streaming", serverStreamingEnabled);
             preferences.end();
-            logAction("handleApiControl", "STATE_CHANGE", "Streaming toggled to: " + String(serverStreamingEnabled ? "ON" : "OFF"));
+        }
+        else if (body.indexOf("set_buffer") != -1) {
+            int bufIdx = body.indexOf("\"buffer\":");
+            if (bufIdx != -1) {
+                bufIdx += 9;
+                int parsedBuf = body.substring(bufIdx).toInt();
+                if (parsedBuf >= 0 && parsedBuf <= 200) {
+                    serverAudioBuffer = parsedBuf;
+                    preferences.begin("enkelvoud", false);
+                    preferences.putString("s_ver", SETTINGS_VERSION);
+                    preferences.putInt("audio_buf", serverAudioBuffer);
+                    preferences.end();
+                    logAction("handleApiControl", "BUFFER", "Audio buffer adjusted to: " + String(serverAudioBuffer) + " ms");
+                }
+            }
+        }
+        else if (body.indexOf("set_bitrate") != -1) {
+            int brIdx = body.indexOf("\"bitrate\":\"");
+            if (brIdx != -1) {
+                brIdx += 11;
+                int endQuote = body.indexOf("\"", brIdx);
+                if (endQuote != -1) {
+                    String newBr = body.substring(brIdx, endQuote);
+                    if (newBr == "low" || newBr == "mid" || newBr == "high") {
+                        serverOpusBitrate = newBr;
+                        preferences.begin("enkelvoud", false);
+                        preferences.putString("s_ver", SETTINGS_VERSION);
+                        preferences.putString("bitrate", serverOpusBitrate);
+                        preferences.end();
+                        logAction("handleApiControl", "BITRATE", "Opus bitrate changed to: " + serverOpusBitrate);
+                    }
+                }
+            }
         }
         else if (body.indexOf("set_audio_input") != -1) {
             String newMode = serverAudioInputMode;
-
-            if (body.indexOf("Stream Radio Test") != -1) newMode = "Stream Radio Test";
-            else if (body.indexOf("USB") != -1) newMode = "USB";
-            else if (body.indexOf("Bluetooth") != -1) newMode = "Bluetooth";
-            else if (body.indexOf("AUX in") != -1) newMode = "AUX in";
+            if (body.indexOf("\"input\":\"Stream Radio Test\"") != -1) newMode = "Stream Radio Test";
+            else if (body.indexOf("\"input\":\"USB\"") != -1) newMode = "USB";
+            else if (body.indexOf("\"input\":\"Bluetooth\"") != -1) newMode = "Bluetooth";
+            else if (body.indexOf("\"input\":\"AUX in\"") != -1) newMode = "AUX in";
+            else if (body.indexOf("\"input\":\"None\"") != -1) newMode = "None";
 
             if (newMode != serverAudioInputMode) {
                 serverAudioInputMode = newMode;
                 preferences.begin("enkelvoud", false);
+                preferences.putString("s_ver", SETTINGS_VERSION);
                 preferences.putString("audio_in", serverAudioInputMode);
                 preferences.end();
-                logAction("handleApiControl", "STATE_CHANGE", "Audio input changed to: " + serverAudioInputMode);
+                logAction("handleApiControl", "INPUT", "Audio input switched to: " + serverAudioInputMode);
             }
         }
     }
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
-    switch(type) {
-        case WStype_DISCONNECTED:
-            logAction("webSocketEvent", "DISCONNECT", "Client #" + String(num) + " disconnected.");
-            break;
-        case WStype_CONNECTED: {
-            IPAddress ip = webSocket.remoteIP(num);
-            logAction("webSocketEvent", "CONNECT", "Client #" + String(num) + " connected from IP: " + ip.toString());
-            break;
-        }
-        default:
-            break;
-    }
-}
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {}
 
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    logAction("setup", "INIT", "Booting Enkelvoud Audio Server...");
-
     loadSettings();
-
     initializeAudioObjects();
 
     bool connectedToNetwork = false;
     if (serverWifiSsid.length() > 0) {
         WiFi.mode(WIFI_STA);
-
         if (serverUseStaticIp) {
             IPAddress ip, gateway, subnet, dns;
             ip.fromString(serverStaticIp);
@@ -462,85 +462,65 @@ void setup() {
             subnet.fromString(serverStaticSn);
             dns.fromString(serverStaticDns);
             WiFi.config(ip, gateway, subnet, dns);
-            logAction("setup", "WIFI", "Configured user static IP: " + serverStaticIp);
         } else {
             WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
-            logAction("setup", "WIFI", "Configured router DHCP mode.");
         }
 
-        logAction("setup", "WIFI", "Connecting to saved SSID: " + serverWifiSsid);
         WiFi.begin(serverWifiSsid.c_str(), serverWifiPass.c_str());
 
         unsigned long startAttemptTime = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
             delay(500);
-            Serial.print(".");
         }
-
-        if (WiFi.status() == WL_CONNECTED) {
-            connectedToNetwork = true;
-            logAction("setup", "WIFI", "Successfully connected to network! IP: " + WiFi.localIP().toString());
-        } else {
-            logAction("setup", "WIFI", "Failed to connect to saved network. Falling back to AP mode.");
-        }
+        if (WiFi.status() == WL_CONNECTED) connectedToNetwork = true;
     }
 
     if (!connectedToNetwork) {
         WiFi.mode(WIFI_AP);
         WiFi.softAPConfig(ap_local_ip, ap_gateway, ap_subnet);
         WiFi.softAP(default_ap_ssid, default_ap_password);
-        logAction("setup", "WIFI", "AP Mode Active (192.168.4.1). IP: " + WiFi.softAPIP().toString());
-    } else {
-        WiFi.enableSTA(true);
-        WiFi.enableAP(false);
-        logAction("setup", "WIFI", "AP Mode disabled. Running purely in STA mode.");
+        serverAudioInputMode = "None";
     }
 
-    Serial.println("\n--------------------------------------------------");
-    Serial.printf("HTTP Server active! Access via browser at:\n");
-    if (connectedToNetwork) {
-        Serial.printf("-> http://%s/\n", WiFi.localIP().toString().c_str());
-    } else {
-        Serial.printf("-> http://192.168.4.1/ (AP Mode)\n");
-    }
-    Serial.println("--------------------------------------------------\n");
+    Serial.println("\n========================================");
+    Serial.println("       ENKELVOUD NETWORK SETTINGS       ");
+    Serial.println("========================================");
+    Serial.printf("Wi-Fi Mode        : %s\n", (WiFi.getMode() == WIFI_STA ? "STA (Station)" : (WiFi.getMode() == WIFI_AP ? "AP (Access Point)" : "AP+STA")));
+    Serial.printf("Connected SSID    : %s\n", connectedToNetwork ? serverWifiSsid.c_str() : default_ap_ssid);
+    Serial.printf("IP Address        : %s\n", connectedToNetwork ? WiFi.localIP().toString().c_str() : WiFi.softAPIP().toString().c_str());
+    Serial.printf("Gateway IP        : %s\n", connectedToNetwork ? WiFi.gatewayIP().toString().c_str() : ap_gateway.toString().c_str());
+    Serial.printf("Subnet Mask       : %s\n", connectedToNetwork ? WiFi.subnetMask().toString().c_str() : ap_subnet.toString().c_str());
+    Serial.printf("Primary DNS       : %s\n", WiFi.dnsIP(0).toString().c_str());
+    Serial.printf("Secondary DNS     : %s\n", WiFi.dnsIP(1).toString().c_str());
+    Serial.printf("MAC Address       : %s\n", WiFi.macAddress().c_str());
+    Serial.printf("Use Static Config : %s\n", serverUseStaticIp ? "YES" : "NO");
+    Serial.println("========================================\n");
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/player", HTTP_GET, handlePlayer);
     server.on("/settings", HTTP_GET, handleSettings);
-    server.on("/Settings", HTTP_GET, handleSettings);
-    server.on("/control", HTTP_GET, handleRoot);
-    server.on("/control.html", HTTP_GET, handleRoot);
-
     server.on("/scan", HTTP_GET, handleApiScanWifi);
     server.on("/api/test_wifi", HTTP_POST, handleApiTestWifi);
     server.on("/api/volume", HTTP_POST, handleApiVolume);
+    server.on("/api/reset", HTTP_POST, handleApiReset);
     server.on("/save", HTTP_POST, handleSaveSettings);
     server.on("/cancel", HTTP_POST, handleCancelSettings);
     server.on("/api/state", HTTP_GET, handleApiState);
     server.on("/api/control", HTTP_POST, handleApiControl);
 
     server.begin();
-    logAction("setup", "HTTP", "HTTP Server active on port 80");
-
     webSocket.begin();
     webSocket.onEvent(webSocketEvent);
-    logAction("setup", "WEBSOCKET", "WebSocket server active on port 8081");
-
-    setupUSBInput();
-    setupBluetoothInput();
-    setupAuxInput();
-    setupStreamInput();
 
     if (opus) opus->begin();
     if (encoder) encoder->begin(currentAudioInfo);
-
-    logAction("setup", "READY", "System ready and streaming initialized.");
 }
 
 void loop() {
     server.handleClient();
     webSocket.loop();
+
+    checkIncomingStream();
 
     handleUSBInputLoop();
     handleBluetoothInputLoop();

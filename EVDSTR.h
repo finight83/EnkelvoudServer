@@ -1,6 +1,8 @@
 #ifndef EVDSTR_H
 #define EVDSTR_H
 
+#include <Arduino.h>
+#include <WiFi.h>
 #include "AudioTools.h"
 #include "AudioTools/Communication/AudioHttp.h"
 
@@ -13,71 +15,54 @@ extern bool hostMuted;
 extern bool serverStreamingEnabled;
 extern void logAction(const String& functionName, const String& eventType, const String& details);
 
-// Use extern pointers to defer initialization until after preferences are loaded
 extern URLStream* radioStream;
 extern StreamCopy* radioToEncoderCopier;
 
 namespace {
     bool radioAttempted = false;
-    unsigned long lastRadioPacketTime = 0;
-    unsigned long lastRadioCheckLogTime = 0;
+    unsigned long lastRadioRetryAttempt = 0;
+    // Increased cooldown to 30 seconds so it doesn't hammer DNS or starve the web server
+    const unsigned long RADIO_RETRY_INTERVAL = 30000; 
 }
 
 inline void setupStreamInput() {
-    // Stream input initialization will be called from main setup() after preferences are loaded
+    // Initialization stub
 }
 
 inline void handleStreamInputLoop() {
     if (serverAudioInputMode != "Stream Radio Test") {
         if (radioStream && *radioStream) {
             radioStream->end();
-            logAction("handleStreamInputLoop", "STREAM", "HTTP stream closed due to input mode change.");
+            logAction("handleStreamInputLoop", "STREAM", "HTTP stream closed due to mode change.");
         }
         radioAttempted = false;
+        return; 
+    }
+
+    if (!radioStream) return;
+
+    // If Wi-Fi is down, don't attempt anything
+    if (WiFi.status() != WL_CONNECTED) {
         return;
     }
 
-    unsigned long currentMillis = millis();
-
-    if (!radioStream) {
-        logAction("handleStreamInputLoop", "STREAM_ERR", "Radio stream not initialized in setup.");
-        return;
-    }
-
-    if (!*radioStream && !radioAttempted) {
+    // Only attempt a connection if we haven't tried yet, or if 30 seconds have passed since the last failure
+    if (!*radioStream && (!radioAttempted || (millis() - lastRadioRetryAttempt > RADIO_RETRY_INTERVAL))) {
         logAction("handleStreamInputLoop", "STREAM", "Attempting connection to HTTP Audio Stream...");
         radioAttempted = true;
+        lastRadioRetryAttempt = millis();
+        
         bool started = radioStream->begin("http://stream.srg-ssr.ch/m/rsj/mp3_128", "audio/mp3");
         if (!started) {
-            logAction("handleStreamInputLoop", "STREAM_ERR", "Failed to connect or open HTTP stream URL.");
+            logAction("handleStreamInputLoop", "STREAM_ERR", "Stream connection failed. Backing off for 30s to keep web server responsive.");
         } else {
             logAction("handleStreamInputLoop", "STREAM", "HTTP audio stream connected successfully.");
         }
     }
 
     if (*radioStream) {
-        if (!hostMuted) {
-            // Route stream to DACs if applicable
-        }
-
         if (serverStreamingEnabled && !hostMuted && radioToEncoderCopier) {
-            size_t bytesCopied = radioToEncoderCopier->copy();
-            if (bytesCopied > 0) {
-                lastRadioPacketTime = currentMillis;
-            }
-        }
-    }
-
-    if (currentMillis - lastRadioCheckLogTime > 5000) {
-        lastRadioCheckLogTime = currentMillis;
-        if (*radioStream) {
-            if (currentMillis - lastRadioPacketTime > 6000) {
-                logAction("handleStreamInputLoop", "STREAM_WARN", "HTTP stream connected but no audio payload received recently.");
-            } else {
-                logAction("handleStreamInputLoop", "STREAM_OK", "HTTP stream active and receiving audio data.");
-            }
-        } else {
-            logAction("handleStreamInputLoop", "STREAM_ERR", "HTTP stream is disconnected.");
+            radioToEncoderCopier->copy();
         }
     }
 }

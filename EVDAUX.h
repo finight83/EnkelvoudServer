@@ -13,20 +13,18 @@ namespace {
 }
 
 inline void setupAuxInput() {
-    // AUX input initialization stub
+    logAction("handleAuxInputLoop", "AUX_OK", "AUX input module initialized.");
 }
 
 inline void handleAuxInputLoop() {
-    if (serverAudioInputMode != "AUX in") return;
+    if (serverAudioInputMode != "AUX in") return; // Completely halts processing if another input is selected
 
     unsigned long currentMillis = millis();
-    if (currentMillis - lastAuxCheckLogTime > 5000) {
+    if (currentMillis - lastAuxCheckLogTime > 30000) {
         lastAuxCheckLogTime = currentMillis;
         bool auxSignalPresent = true; 
         if (!auxSignalPresent) {
-            logAction("handleAuxInputLoop", "AUX_WARN", "AUX input selected, but no valid audio input signal detected on pins.");
-        } else {
-            logAction("handleAuxInputLoop", "AUX_OK", "AUX input connected and receiving signal.");
+            logAction("handleAuxInputLoop", "AUX_WARN", "AUX input selected, but no valid audio input signal detected.");
         }
     }
 
@@ -35,7 +33,7 @@ inline void handleAuxInputLoop() {
     }
 
     if (serverStreamingEnabled && !hostMuted) {
-        // Opus encode & stream AUX audio to WiFi nodes
+        // Stream AUX audio to network nodes
     }
 }
 
