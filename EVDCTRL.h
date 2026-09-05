@@ -3,13 +3,14 @@
 
 #include <Arduino.h>
 
-const char CONTROL_HTML[] PROGMEM = R"rawliteral(
+inline String getControlPageTemplate(const char* friendly_name) {
+    String html = String(R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Enkelvoud Control Panel</title>
+    <title>)rawliteral") + friendly_name + R"rawliteral( Control Panel</title>
     <style>
         :root {
             --bg-color: #000000;
@@ -97,10 +98,21 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
             flex-wrap: wrap;
         }
 
-        h1 {
-            font-size: 1.5rem;
-            margin: 0;
+        .server-title-clickable {
+            background: transparent;
+            border: none;
             color: var(--text-color);
+            font-size: 1.5rem;
+            font-weight: 700;
+            padding: 0;
+            cursor: pointer;
+            text-align: left;
+            transition: color 0.2s;
+        }
+
+        .server-title-clickable:hover {
+            color: var(--accent-color);
+            text-decoration: underline;
         }
 
         .btn-primary {
@@ -368,40 +380,51 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
             justify-content: flex-end;
             gap: 10px;
         }
+
+        .collapsible-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 1rem;
+        }
+
+        .collapsible-content {
+            display: none;
+        }
+
+        .collapsible-content.open {
+            display: block;
+        }
+
+        .arrow {
+            transition: transform 0.2s;
+        }
+
+        .arrow.open {
+            transform: rotate(180deg);
+        }
+
+        .row-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; padding: 15px 20px;">
-            <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-                <button class="btn-toggle" id="streamToggleBtn" onclick="toggleStreaming()">Stream: OFF</button>
-                <button class="btn-primary" id="bitrateBtn" onclick="cycleBitrate()">Bitrate: mid</button>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <label style="font-size: 0.85rem; font-weight: 600;">Audio In:</label>
-                    <select class="input-select" id="audioInputSelect" onchange="changeAudioInput(this.value)">
-                        <option value="USB">USB</option>
-                        <option value="Bluetooth">Bluetooth</option>
-                        <option value="AUX in">AUX in</option>
-                        <option value="Stream Radio Test">Stream Radio Test</option>
-                    </select>
-                </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <label style="font-size: 0.85rem; font-weight: 600;">Buffer:</label>
-                    <input type="range" id="bufferSlider" min="0" max="200" value="0" style="accent-color: var(--accent-color); width: 90px; cursor: pointer;" oninput="document.getElementById('bufferLabel').innerText = this.value" onchange="changeBuffer(this.value)">
-                    <span style="font-size: 0.85rem; min-width: 35px;"><span id="bufferLabel">0</span>ms</span>
-                </div>
-            </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <button class="action-btn danger" onclick="resetDevice()" title="Reset ESP32">🔄 Reset</button>
-                <a href="/player" class="action-btn" title="Audio Player" style="text-decoration: none;">🔊 Player</a>
-                <a href="/settings" class="action-btn" title="Settings" style="text-decoration: none;">⚙️ Settings</a>
-            </div>
-        </div>
-
         <div class="header-actions">
-            <div style="display: flex; align-items: center; gap: 15px;">
-                <h1>Enkelvoud Control Panel</h1>
+            <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                <button class="server-title-clickable" id="serverTitleBtn" onclick="openServerRenameModal()" title="Click to change server name">)rawliteral" + String(friendly_name) + R"rawliteral(</button>
                 <button class="action-btn" id="globalMuteBtn" onclick="toggleGlobalMute()">Mute Server</button>
+                <button class="btn-toggle" id="streamToggleBtn" onclick="toggleStreaming()">Stream</button>
+                <select class="input-select" id="audioInputSelect" onchange="changeAudioInput(this.value)">
+                    <option value="USB">USB</option>
+                    <option value="Bluetooth">Bluetooth</option>
+                    <option value="AUX in">AUX in</option>
+                </select>
             </div>
             <div class="header-controls">
                 <select class="theme-select" id="themeSelector" onchange="changeTheme(this.value)">
@@ -412,8 +435,63 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                 <button class="btn-primary" onclick="createNewGroup()">+ New Group</button>
             </div>
         </div>
-        
+
         <div class="card">
+            <div class="collapsible-header" onclick="toggleAdvancedSection()">
+                <span>Advanced</span>
+                <span id="advancedArrow" class="arrow">&#9660;</span>
+            </div>
+            <div id="advancedSection" class="collapsible-content" style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px;">
+                <div style="display: flex; flex-direction: column; gap: 15px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                        <button class="btn-primary" id="bitrateBtn" onclick="cycleBitrate()">Bitrate: mid</button>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="font-size: 0.85rem; font-weight: 600;">Buffer:</label>
+                            <input type="range" id="bufferSlider" min="0" max="200" value="0" style="accent-color: var(--accent-color); width: 110px; cursor: pointer;" oninput="document.getElementById('bufferLabel').innerText = this.value" onchange="changeBuffer(this.value)">
+                            <span style="font-size: 0.85rem; min-width: 35px;"><span id="bufferLabel">0</span>ms</span>
+                        </div>
+                        <button class="action-btn danger" onclick="resetDevice()" title="Reset ESP32">🔄 Reset</button>
+                    </div>
+
+                    <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 5px 0;">
+
+                    <div>
+                        <label style="font-size: 0.9rem; font-weight: 600; margin-bottom: 8px; display: block;">Network Settings</label>
+                        <label style="font-size: 0.85rem;">Wi-Fi SSID:</label>
+                        <div class="row-group" style="margin-top: 4px;">
+                            <input type="text" id="ssidInput" name="ssid" class="modal-input" placeholder="Enter SSID">
+                            <button type="button" class="btn-primary" onclick="openWifiModal()" style="white-space: nowrap;">Wi-Fi Search</button>
+                        </div>
+                        <label style="font-size: 0.85rem; margin-top: 8px;">Wi-Fi Password:</label>
+                        <div class="row-group" style="margin-top: 4px;">
+                            <input type="password" id="passInput" name="pass" class="modal-input">
+                            <button type="button" class="btn-primary" id="testBtn" onclick="testWifiConnection()" style="white-space: nowrap; background-color: var(--text-muted);">Test Connection</button>
+                        </div>
+                        <div id="wifiTestResult" style="font-size: 0.85rem; margin-top: 6px;"></div>
+                        <label style="display: flex; align-items: center; gap: 10px; margin-top: 10px; cursor: pointer; font-size: 0.85rem;">
+                            <input type="checkbox" id="staticCheck" name="use_static" onchange="toggleStaticIp()" style="width: 16px; height: 16px; accent-color: var(--accent-color);"> Use Static IP Configuration
+                        </label>
+                        <div id="staticIpFields" style="display: none; margin-top: 8px;">
+                            <label style="font-size: 0.85rem;">Static IP Address:</label>
+                            <input type="text" id="staticIpInput" name="static_ip" class="modal-input" style="margin-top: 4px;">
+                            <label style="font-size: 0.85rem; margin-top: 8px;">Gateway IP:</label>
+                            <input type="text" id="gatewayInput" name="static_gw" class="modal-input" style="margin-top: 4px;">
+                            <label style="font-size: 0.85rem; margin-top: 8px;">Subnet Mask:</label>
+                            <input type="text" id="subnetInput" name="static_sn" class="modal-input" style="margin-top: 4px;">
+                            <label style="font-size: 0.85rem; margin-top: 8px;">DNS Server:</label>
+                            <input type="text" id="dnsInput" name="static_dns" class="modal-input" style="margin-top: 4px;">
+                        </div>
+                        <button type="button" class="btn-primary" onclick="saveNetworkSettings()" style="margin-top: 12px;">Save Network Settings</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="font-size: 1.2rem; margin: 0;">Rooms & Nodes</h2>
+                <a href="/player" class="action-btn" title="Audio Player" style="text-decoration: none;">🔊 Player</a>
+            </div>
             <div id="groupList">
                 <div style="color: var(--text-muted); font-size: 0.85rem;" id="scanningMessage">Loading nodes from configuration...</div>
             </div>
@@ -438,6 +516,29 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
         </div>
     </div>
 
+    <div class="modal-overlay" id="serverRenameModal">streamToggleBtn
+        <div class="modal-dialog">
+            <h3 class="modal-title">Change Friendly Server Name</h3>
+            <input type="text" class="modal-input" id="serverRenameInput" placeholder="Enter new server name" pattern="[a-zA-Z0-9]+" title="Alphanumeric characters only (no spaces)">
+            <div class="modal-buttons">
+                <button class="action-btn" onclick="closeServerRenameModal()">Cancel</button>
+                <button class="btn-primary" onclick="submitServerRename()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="wifiModal">
+        <div class="modal-dialog">
+            <h3 class="modal-title">Available Wi-Fi Networks</h3>
+            <div id="wifiNetworksList" style="max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin: 10px 0;">
+                Scanning...
+            </div>
+            <div class="modal-buttons">
+                <button class="action-btn" onclick="closeWifiModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const groupList = document.getElementById('groupList');
         const logWindow = document.getElementById('logWindow');
@@ -448,6 +549,130 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
         let isSlidingBuffer = false;
         let currentBitrate = 'mid';
         const bitrates = ['low', 'mid', 'high'];
+
+        function openServerRenameModal() {
+            const btn = document.getElementById('serverTitleBtn');
+            const input = document.getElementById('serverRenameInput');
+            input.value = btn ? btn.textContent.trim() : '';
+            document.getElementById('serverRenameModal').classList.add('active');
+            setTimeout(() => { input.focus(); input.select(); }, 50);
+        }
+
+        function closeServerRenameModal() {
+            document.getElementById('serverRenameModal').classList.remove('active');
+        }
+
+        async function submitServerRename() {
+            const inputEl = document.getElementById('serverRenameInput');
+            const newName = inputEl ? inputEl.value.trim() : '';
+            if (!newName) {
+                closeServerRenameModal();
+                return;
+            }
+            closeServerRenameModal();
+            try {
+                await fetch('/api/server_name', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                });
+                alert('Server name updated successfully.');
+                window.location.reload();
+            } catch (e) {
+                alert('Failed to update server name.');
+            }
+        }
+
+        document.getElementById('serverRenameInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitServerRename();
+        });
+
+        function toggleAdvancedSection() {
+            document.getElementById('advancedSection').classList.toggle('open');
+            document.getElementById('advancedArrow').classList.toggle('open');
+        }
+
+        function toggleStaticIp() {
+            const isChecked = document.getElementById('staticCheck').checked;
+            document.getElementById('staticIpFields').style.display = isChecked ? 'block' : 'none';
+        }
+
+        async function saveNetworkSettings() {
+            const formData = new URLSearchParams();
+            formData.append('ssid', document.getElementById('ssidInput').value);
+            formData.append('pass', document.getElementById('passInput').value);
+            if (document.getElementById('staticCheck').checked) {
+                formData.append('use_static', 'on');
+                formData.append('static_ip', document.getElementById('staticIpInput').value);
+                formData.append('static_gw', document.getElementById('gatewayInput').value);
+                formData.append('static_sn', document.getElementById('subnetInput').value);
+                formData.append('static_dns', document.getElementById('dnsInput').value);
+            }
+            formData.append('restart_device', 'on');
+
+            try {
+                await fetch('/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+                alert('Network settings saved. Restarting server...');
+                setTimeout(() => { window.location.reload(); }, 4000);
+            } catch (e) {
+                alert('Failed to save settings.');
+            }
+        }
+
+        async function openWifiModal() {
+            document.getElementById('wifiModal').classList.add('active');
+            const listEl = document.getElementById('wifiNetworksList');
+            listEl.innerHTML = '<div>Scanning networks, please wait...</div>';
+            try {
+                const res = await fetch('/scan');
+                const nets = await res.json();
+                if (nets.length === 0) {
+                    listEl.innerHTML = '<div>No networks found.</div>';
+                    return;
+                }
+                let html = '';
+                nets.forEach(n => {
+                    html += `<div style="padding: 8px; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between;" onclick="selectNetwork('${n.ssid}')"><span>${escapeHtml(n.ssid)}</span><span>${n.rssi} dBm</span></div>`;
+                });
+                listEl.innerHTML = html;
+            } catch (e) {
+                listEl.innerHTML = '<div>Failed to scan networks.</div>';
+            }
+        }
+
+        function closeWifiModal() {
+            document.getElementById('wifiModal').classList.remove('active');
+        }
+
+        function selectNetwork(ssid) {
+            document.getElementById('ssidInput').value = ssid;
+            closeWifiModal();
+        }
+
+        async function testWifiConnection() {
+            const ssid = document.getElementById('ssidInput').value;
+            const pass = document.getElementById('passInput').value;
+            const resEl = document.getElementById('wifiTestResult');
+            resEl.textContent = 'Testing connection...';
+            resEl.style.color = 'var(--text-muted)';
+            try {
+                const res = await fetch('/api/test_wifi', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid, pass })
+                });
+                const data = await res.json();
+                resEl.textContent = data.message;
+                resEl.style.color = data.success ? 'var(--success-color)' : 'var(--danger-color)';
+            } catch (e) {
+                resEl.textContent = 'Connection test failed.';
+                resEl.style.color = 'var(--danger-color)';
+            }
+        }
 
         async function cycleBitrate() {
             let currentIndex = bitrates.indexOf(currentBitrate);
@@ -489,15 +714,14 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
             if (!confirm("Are you sure you want to reset the ESP32-S3 server?")) return;
             try {
                 await fetch('/api/reset', { method: 'POST' });
-            } catch (e) {
-                // Ignore network error due to immediate restart
-            }
+            } catch (e) {}
             alert('Server is resetting...');
             setTimeout(() => { window.location.reload(); }, 4000);
         }
 
         async function fetchState() {
             if (document.getElementById('renameModal').classList.contains('active')) return;
+            if (document.getElementById('serverRenameModal').classList.contains('active')) return;
             if (activeSliderGroup !== null) return;
 
             try {
@@ -506,11 +730,33 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                 const data = await res.json();
                 currentNodesData = data.nodes || {};
                 
+                if (data.server_name) {
+                    const sBtn = document.getElementById('serverTitleBtn');
+                    if (sBtn && sBtn.textContent !== data.server_name && document.activeElement !== document.getElementById('serverRenameInput')) {
+                        sBtn.textContent = data.server_name;
+                    }
+                }
+
                 if (data.bitrate) {
                     currentBitrate = data.bitrate;
                     const btn = document.getElementById('bitrateBtn');
                     if (btn) btn.textContent = `Bitrate: ${currentBitrate}`;
                 }
+
+                if (data.wifi_ssid !== undefined && document.activeElement !== document.getElementById('ssidInput')) {
+                    document.getElementById('ssidInput').value = data.wifi_ssid;
+                }
+                if (data.wifi_pass !== undefined && document.activeElement !== document.getElementById('passInput')) {
+                    document.getElementById('passInput').value = data.wifi_pass;
+                }
+                if (data.use_static !== undefined) {
+                    document.getElementById('staticCheck').checked = data.use_static;
+                    document.getElementById('staticIpFields').style.display = data.use_static ? 'block' : 'none';
+                }
+                if (data.static_ip) document.getElementById('staticIpInput').value = data.static_ip;
+                if (data.static_gw) document.getElementById('gatewayInput').value = data.static_gw;
+                if (data.static_sn) document.getElementById('subnetInput').value = data.static_sn;
+                if (data.static_dns) document.getElementById('dnsInput').value = data.static_dns;
 
                 const globalMuteBtn = document.getElementById('globalMuteBtn');
                 if (data.host_muted) {
@@ -522,13 +768,8 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                 }
 
                 const streamBtn = document.getElementById('streamToggleBtn');
-                if (data.streaming_enabled) {
-                    streamBtn.textContent = "Stream: ON";
-                    streamBtn.classList.add('active');
-                } else {
-                    streamBtn.textContent = "Stream: OFF";
-                    streamBtn.classList.remove('active');
-                }
+                streamBtn.textContent = "Streaming";
+                streamBtn.style.backgroundColor = data.streaming_enabled ? "#166534" : "#991b1b"; // Green when streaming, red when not
 
                 const audioInputSelect = document.getElementById('audioInputSelect');
                 if (data.audio_input && document.activeElement !== audioInputSelect) {
@@ -616,7 +857,7 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
         function deleteGroup(groupName) {
             const groups = new Set();
             for (const info of Object.values(currentNodesData)) {
-                groups.add(info.group || 'Default Room');
+                groups.add(info.group || 'Main Room');
             }
 
             if (groups.size <= 1) {
@@ -624,7 +865,7 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                 return;
             }
 
-            if (!confirm(`Delete room "${groupName}"? All nodes will move to "Default Room".`)) return;
+            if (!confirm(`Delete room "${groupName}"? All nodes will move to "Main Room".`)) return;
 
             fetch('/api/control', {
                 method: 'POST',
@@ -668,10 +909,13 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
         });
 
         function renderGroupsAndNodes(nodes) {
-            const groups = {};
+            const groups = { 'Main Room': [] };
             for (const [uuid, info] of Object.entries(nodes)) {
-                const g = info.group || 'Default Room';
+                const g = info.group || 'Main Room';
                 if (!groups[g]) groups[g] = [];
+                if (g === 'Main Room' && (uuid === 'esp32_node_1' || info.name === 'Enkelvoud Node')) {
+                    continue;
+                }
                 groups[g].push({ uuid, ...info });
             }
 
@@ -679,6 +923,8 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
             for (const [groupName, nodeList] of Object.entries(groups)) {
                 if (groupVolumes[groupName] === undefined) groupVolumes[groupName] = 100;
                 
+                const isMain = (groupName === 'Main Room');
+
                 html += `
                     <div class="group-container">
                         <div class="group-header">
@@ -688,7 +934,13 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
                             <div class="group-controls">
                                 <span>Vol: <span id="volLabel_${escapeHtml(groupName)}">${groupVolumes[groupName]}</span>%</span>
                                 <input type="range" min="0" max="100" value="${groupVolumes[groupName]}" oninput="activeSliderGroup='${escapeHtml(groupName)}'; document.getElementById('volLabel_${escapeHtml(groupName)}').innerText = this.value; updateGroupVolume('${escapeHtml(groupName)}', this.value);" onchange="activeSliderGroup=null;">
-                                <button class="action-btn danger" onclick="deleteGroup('${escapeHtml(groupName)}')">Delete Room</button>
+                `;
+
+                if (!isMain) {
+                    html += `<button class="action-btn danger" onclick="deleteGroup('${escapeHtml(groupName)}')">Delete Room</button>`;
+                }
+
+                html += `
                             </div>
                         </div>
                         <div class="node-list">
@@ -731,5 +983,8 @@ const char CONTROL_HTML[] PROGMEM = R"rawliteral(
 </body>
 </html>
 )rawliteral";
+
+    return html;
+}
 
 #endif

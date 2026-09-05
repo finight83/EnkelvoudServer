@@ -335,7 +335,7 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
             const int16View = new Int16Array(buffer);
             if (int16View.length === 0) return;
 
-            const numSamples = int16View.length / 2; // Stereo channels
+            const numSamples = int16View.length / 2;
             const sampleRate = 48000;
             const audioBuffer = audioCtx.createBuffer(2, numSamples, sampleRate);
             
@@ -359,7 +359,7 @@ const char PLAYER_HTML[] PROGMEM = R"rawliteral(
 
             const currentTime = audioCtx.currentTime;
             if (nextPlayTime < currentTime) {
-                nextPlayTime = currentTime + 0.08; // Jitter buffer buffer time
+                nextPlayTime = currentTime + 0.08;
             }
 
             source.start(nextPlayTime);

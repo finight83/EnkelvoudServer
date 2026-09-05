@@ -4,7 +4,6 @@
 #include <Arduino.h>
 #include "AudioTools.h"
 
-// External references from main sketch
 extern String serverAudioInputMode;
 extern bool hostMuted;
 extern bool serverStreamingEnabled;
@@ -15,48 +14,33 @@ extern int pinBtBclk;
 extern int pinBtLrc;
 extern int pinBtDin;
 
-// AudioTools processing streams for Bluetooth input
 namespace {
     audio_tools::I2SStream btI2SStream;
-    // FormatConverterStream handles 32-bit to 16-bit sample alignment to prevent static/distortion
-    audio_tools::FormatConverterStream btConverter(btI2SStream);
-    audio_tools::VolumeStream btVolumeStream(btConverter);
     audio_tools::StreamCopy* btToEncoderCopier = nullptr;
-    audio_tools::StreamCopy* btToDacCopier1 = nullptr;
+    audio_tools::StreamCopy* btToDacCopier = nullptr;
     bool btInitialized = false;
-    unsigned long lastBtCheckLogTime = 0;
 }
 
 inline void setupBluetoothInput() {
-    // Configure ESP32-S3 as an I2S SLAVE. Many BT modules output 32-bit slots.
     auto cfg = btI2SStream.defaultConfig(RX_MODE);
-    cfg.pin_bck = pinBtBclk;     
-    cfg.pin_ws = pinBtLrc;      
-    cfg.pin_data = pinBtDin;    
+    cfg.pin_bck = pinBtBclk;
+    cfg.pin_ws = pinBtLrc;
+    cfg.pin_data = pinBtDin;
     cfg.channels = 2;
-    cfg.bits_per_sample = 32; // Set to 32 to safely ingest master frames without alignment static (converted downstream)
-    cfg.sample_rate = 44100;    
-    cfg.is_master = false;      
-    
-    // Robust buffer settings to eliminate I2S jitter stuttering
-    cfg.buffer_count = 12;
-    cfg.buffer_size = 1024;
+    cfg.bits_per_sample = 16;
+    cfg.sample_rate = 48000;
+    cfg.is_master = false;
 
     btI2SStream.begin(cfg);
-    btConverter.begin(cfg);
-    
-    auto volCfg = cfg;
-    volCfg.bits_per_sample = 16; // Output standard 16-bit to volume and copy pipelines
-    btVolumeStream.begin(volCfg);
-    
-    logAction("setupBluetoothInput", "BT_OK", "Bluetooth I2S slave input module initialized with 32-bit safety alignment.");
+    logAction("setupBluetoothInput", "BT_OK", "Bluetooth I2S slave input module initialized at 48kHz.");
 }
 
 inline void handleBluetoothInputLoop() {
     if (serverAudioInputMode != "Bluetooth") {
         if (btInitialized) {
             delete btToEncoderCopier; btToEncoderCopier = nullptr;
-            delete btToDacCopier1; btToDacCopier1 = nullptr;
+            delete btToDacCopier; btToDacCopier = nullptr;
+            btI2SStream.end();
             btInitialized = false;
             logAction("handleBluetoothInputLoop", "BT_INFO", "Bluetooth stream pipelines deactivated.");
         }
@@ -65,29 +49,23 @@ inline void handleBluetoothInputLoop() {
 
     if (!btInitialized) {
         setupBluetoothInput();
-        extern EncodedAudioStream* encoder;
-        extern I2SStream i2s1;
-        
-        if (encoder) btToEncoderCopier = new StreamCopy(*encoder, btVolumeStream);
-        btToDacCopier1 = new StreamCopy(i2s1, btVolumeStream);
         btInitialized = true;
+        extern EncodedAudioStream* encoder;
+        extern I2SStream i2s;
+        
+        if (encoder) btToEncoderCopier = new StreamCopy(*encoder, btI2SStream);
+        btToDacCopier = new StreamCopy(i2s, btI2SStream);
     }
 
-    btVolumeStream.setVolume(serverVolumeMultiplier);
-
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastBtCheckLogTime > 30000) {
-        lastBtCheckLogTime = currentMillis;
-        logAction("handleBluetoothInputLoop", "BT_INFO", "Bluetooth audio stream active.");
-    }
-
-    if (!hostMuted) {
-        if (serverStreamingEnabled && btToEncoderCopier) {
+    if (btInitialized && btI2SStream) {
+        extern EncodedAudioStream* encoder;
+        if (serverStreamingEnabled && !hostMuted && btToEncoderCopier && encoder) {
             btToEncoderCopier->copy();
-        } else if (btToDacCopier1) {
-            btToDacCopier1->copy();
+        }
+        if (btToDacCopier) {
+            btToDacCopier->copy();
         }
     }
 }
 
-#endif
+#endif // EVDBT_H

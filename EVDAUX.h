@@ -17,7 +17,7 @@ inline void setupAuxInput() {
 }
 
 inline void handleAuxInputLoop() {
-    if (serverAudioInputMode != "AUX in") return; // Completely halts processing if another input is selected
+    if (serverAudioInputMode != "AUX in") return;
 
     unsigned long currentMillis = millis();
     if (currentMillis - lastAuxCheckLogTime > 30000) {

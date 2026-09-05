@@ -14,13 +14,18 @@ extern void logAction(const String& functionName, const String& eventType, const
 
 extern USBAudioStream in;
 extern StreamCopy* copier;            
+extern StreamCopy* usbToDacCopier;   
 
 inline void setupUSBInput() {
     logAction("handleUSBInputLoop", "USB_OK", "USB input module initialized.");
 }
 
 inline void handleUSBInputLoop() {
-    if (serverAudioInputMode != "USB") return; // Completely halts processing if another input is selected
+    if (serverAudioInputMode != "USB") return;
+
+    if (!hostMuted) {
+        if (usbToDacCopier) usbToDacCopier->copy();
+    }
 
     if (serverStreamingEnabled && !hostMuted) {
         if (copier) copier->copy();

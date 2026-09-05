@@ -2,6 +2,7 @@
 #include <Esp.h>
 #include <HardwareSerial.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 
 #include <WebServer.h>
 #include <WebSocketsServer.h>
@@ -10,13 +11,12 @@
 #include "AudioTools.h"
 #include "AudioTools/Communication/USB/USBAudioStream.h"
 #include "AudioTools/AudioCodecs/CodecOpus.h"
-#include "AudioTools/Communication/AudioHttp.h"
 
 using namespace audio_tools;
 
 Preferences preferences;
 
-const char* SETTINGS_VERSION = "v1.0.8"; 
+const char* SETTINGS_VERSION = "v1.0.10"; 
 
 const char* default_ap_ssid = "Enkelvoud-Server";
 const char* default_ap_password = "";
@@ -30,7 +30,7 @@ WebSocketsServer webSocket(8081);
 
 AudioInfo currentAudioInfo(48000, 2, 16);
 USBAudioStream in;
-I2SStream i2s2; // Single unified DAC stream reference
+I2SStream i2s;
 
 unsigned long totalOpusBytesStreamed = 0;
 bool hostMuted = false;
@@ -39,6 +39,7 @@ int serverAudioBuffer = 0;
 String serverOpusBitrate = "mid";
 
 String serverThemeMode = "theme-blue";
+String serverFriendlyName = "enkelvoud";
 String serverWifiSsid = "";
 String serverWifiPass = "";
 bool serverUseStaticIp = false;
@@ -47,37 +48,112 @@ String serverStaticGw = "192.168.1.1";
 String serverStaticSn = "255.255.255.0";
 String serverStaticDns = "192.168.1.1";
 
+// Single DAC Pins
 int pinLrc  = 11;
 int pinDout = 12;
 int pinBclk = 13;
 
+// Aux Pins
 int pinAuxLrc = 18;
 int pinAuxDin = 23;
 int pinAuxBclk = 19;
 
-int pinBtLrc  = 15;
-int pinBtDin  = 16;
+// Bluetooth Pins
+int pinBtLrc = 15;
+int pinBtDin = 16;
 int pinBtBclk = 17;
 
 float serverVolumeMultiplier = 1.0f;
-String serverAudioInputMode = "None";
+String serverAudioInputMode = "Bluetooth";
 
 std::vector<String> recentLogs;
 const size_t maxLogs = 50;
 
 class WebSocketPrint;
 
-// Map legacy/modular references to the single unified DAC (`i2s2`)
-#define i2s1 i2s2
-#define usbToDacCopier1 usbToDacCopier
-
 #include "EVDCTRL.h"
 #include "EVDPLR.h"
-#include "EVDSET.h"
 #include "EVDUSB.h"
 #include "EVDBT.h"
 #include "EVDAUX.h"
-#include "EVDSTR.h"
+
+inline String getWebPageTemplate(
+    const char* friendly_name, const char* mdns_target_host,
+    const char* wifi_ssid, const char* wifi_pass, bool use_static_ip,
+    const char* static_ip_str, const char* static_gw_str, const char* static_sn_str, const char* static_dns_str
+) {
+    String html = "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+        "<title>Enkelvoud Network Setup</title>"
+        "<style>"
+        ":root { --bg-color: #f1f5f9; --card-bg: #ffffff; --border-color: #cbd5e1; --text-color: #0f172a; --accent-color: #2563eb; --accent-hover: #1d4ed8; }"
+        "body { font-family: sans-serif; background: var(--bg-color); color: var(--text-color); padding: 20px; margin: 0; }"
+        ".container { max-width: 600px; margin: 0 auto; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }"
+        ".header-container { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }"
+        "h2 { margin: 0; font-size: 22px; }"
+        "input[type='text'], input[type='password'] { font-size: 14px; padding: 10px; box-sizing: border-box; background: var(--bg-color); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 6px; width: 100%; }"
+        "label { display: block; margin-top: 12px; font-size: 14px; font-weight: 600; }"
+        ".row-group { display: flex; gap: 10px; align-items: center; margin-top: 4px; }"
+        ".row-group input { flex: 1; margin-top: 0; }"
+        ".btn { background: var(--accent-color); color: #fff; font-weight: bold; cursor: pointer; border: none; padding: 10px 16px; border-radius: 6px; text-align: center; display: inline-block; transition: background 0.2s; margin-top: 10px; }"
+        ".btn:hover { background: var(--accent-hover); }"
+        ".button-row { display: flex; gap: 10px; margin-top: 20px; }"
+        ".checkbox-label { display: flex; align-items: center; gap: 10px; margin-top: 12px; cursor: pointer; font-weight: normal; }"
+        ".checkbox-label input { width: 18px; height: 18px; accent-color: var(--accent-color); margin: 0; }"
+        "</style></head>"
+        "<body>"
+        "<div class='container'>"
+        
+        "<form id='setupForm' onkeydown='if(event.key === \"Enter\") { event.preventDefault(); return false; }'>"
+        
+        "<div class='header-container'>"
+        "<h2>Enkelvoud Network Setup</h2>"
+        "</div>"
+
+        "<div>"
+        "<label>Server Name (Alphanumeric only):</label>"
+        "<input type='text' name='friendly_name' value='" + String(friendly_name) + "' pattern='[a-zA-Z0-9]+' title='Only alphabetic and numeric characters are allowed (no spaces or special symbols)' required>"
+        "<label style='font-size: 13px; color: var(--accent-color); margin-top: 6px;'>Server Hostname: http://" + String(mdns_target_host) + "</label>" 
+        "<input type='hidden' name='mdns_host' value='" + String(mdns_target_host) + "'>"
+        
+        "<label>Wi-Fi SSID:</label>"
+        "<div class='row-group'>"
+        "<input type='text' id='ssidInput' name='ssid' value='" + String(wifi_ssid) + "' placeholder='Enter SSID'>"
+        "</div>"
+        
+        "<label>Wi-Fi Password:</label>"
+        "<div class='row-group'>"
+        "<input type='password' id='passInput' name='pass' value='" + String(wifi_pass) + "' placeholder='Enter Password'>"
+        "</div>"
+        
+        "<label class='checkbox-label'>"
+        "<input type='checkbox' id='staticCheck' name='use_static' " + String(use_static_ip ? "checked" : "") + " onchange='toggleStaticIp()'> Use Static IP Configuration"
+        "</label>"
+        
+        "<div id='staticIpFields' style='display: " + String(use_static_ip ? "block" : "none") + ";'>"
+        "<label>Static IP Address:</label>"
+        "<input type='text' id='staticIpInput' name='static_ip' value='" + String(static_ip_str) + "'>"
+        "<label>Gateway IP:</label>"
+        "<input type='text' id='gatewayInput' name='static_gw' value='" + String(static_gw_str) + "'>"
+        "<label>Subnet Mask:</label>"
+        "<input type='text' id='subnetInput' name='static_sn' value='" + String(static_sn_str) + "'>"
+        "<label>DNS Server:</label>"
+        "<input type='text' id='dnsInput' name='static_dns' value='" + String(static_dns_str) + "'>"
+        "</div>"
+        "</div>"
+
+        "<div class='button-row'>"
+        "<button type='button' class='btn' onclick='submitForm()' style='flex:1; margin-top:0;'>Save and Connect</button>"
+        "</div>"
+        "</form></div>"
+
+        "<script>"
+        "function toggleStaticIp() { const isChecked = document.getElementById('staticCheck').checked; document.getElementById('staticIpFields').style.display = isChecked ? 'block' : 'none'; }"
+        "function submitForm() { const formData = new URLSearchParams(new FormData(document.getElementById('setupForm'))); fetch('/save', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: formData }).then(() => { alert('Settings saved. Device is restarting and connecting...'); setTimeout(() => { window.location.href = '/'; }, 4000); }); }"
+        "</script></body></html>";
+
+    return html;
+}
 
 WebSocketPrint* wsPrint = nullptr;
 OpusAudioEncoder* opus = nullptr;
@@ -85,8 +161,7 @@ EncodedAudioStream* encoder = nullptr;
 StreamCopy* copier = nullptr;
 StreamCopy* usbToDacCopier = nullptr;
 
-URLStream* radioStream = nullptr;
-StreamCopy* radioToEncoderCopier = nullptr;
+TaskHandle_t audioTaskHandle = NULL;
 
 class WebSocketPrint : public Print {
 public:
@@ -116,37 +191,30 @@ void logAction(const String& functionName, const String& eventType, const String
     }
 }
 
-void checkIncomingStream() {
-    static unsigned long lastStreamCheckTime = 0;
-    if (millis() - lastStreamCheckTime > 5000) {
-        lastStreamCheckTime = millis();
-        if (serverAudioInputMode == "USB") {
-            logAction("checkIncomingStream", "USB", "Validating USB audio stream format and packet availability.");
-        } else if (serverAudioInputMode == "Bluetooth") {
-            logAction("checkIncomingStream", "BT", "Verifying Bluetooth I2S slave clock sync and PCM data flow.");
-        } else if (serverAudioInputMode == "AUX in") {
-            logAction("checkIncomingStream", "AUX", "Inspecting AUX audio input stream state.");
-        } else if (serverAudioInputMode == "Stream Radio Test") {
-            logAction("checkIncomingStream", "STREAM", "Checking HTTP radio stream buffer and connection health.");
-        } else {
-            logAction("checkIncomingStream", "IDLE", "Audio input mode is set to None/Inactive.");
+String sanitizeAlphanumeric(const String& input) {
+    String output = "";
+    for (unsigned int i = 0; i < input.length(); i++) {
+        char c = input[i];
+        if (isAlphaNumeric(c)) {
+            output += (char)tolower(c);
         }
     }
+    if (output.length() == 0) output = "enkelvoud";
+    return output;
 }
 
 void loadSettings() {
     preferences.begin("enkelvoud", false);
+    
     String storedVersion = preferences.getString("s_ver", "");
     
     if (storedVersion != SETTINGS_VERSION) {
-        logAction("loadSettings", "NVM", "New firmware version detected (" + String(SETTINGS_VERSION) + "). Clearing old configuration for fresh setup.");
-        preferences.clear();
+        logAction("loadSettings", "NVM", "New firmware version detected (" + String(SETTINGS_VERSION) + "). Updating version tag.");
         preferences.putString("s_ver", SETTINGS_VERSION);
-        preferences.end();
-        preferences.begin("enkelvoud", false);
     }
 
     serverThemeMode = preferences.getString("theme", "theme-black");
+    serverFriendlyName = sanitizeAlphanumeric(preferences.getString("srv_name", "enkelvoud"));
     serverWifiSsid = preferences.getString("ssid", "");
     serverWifiPass = preferences.getString("pass", "");
     serverUseStaticIp = preferences.getBool("use_static", false);
@@ -163,13 +231,15 @@ void loadSettings() {
     pinAuxDin = preferences.getInt("aux_din", 23);
     pinAuxBclk = preferences.getInt("aux_bclk", 19);
 
-    pinBtLrc  = preferences.getInt("bt_lrc", 15);
-    pinBtDin  = preferences.getInt("bt_din", 16);
+    pinBtLrc = preferences.getInt("bt_lrc", 15);
+    pinBtDin = preferences.getInt("bt_din", 16);
     pinBtBclk = preferences.getInt("bt_bclk", 17);
 
     serverVolumeMultiplier = preferences.getFloat("vol", 1.0f);
     serverAudioInputMode = preferences.getString("audio_in", "Bluetooth");
-    serverStreamingEnabled = preferences.getBool("streaming", false);
+    
+    serverStreamingEnabled = false;
+
     serverAudioBuffer = preferences.getInt("audio_buf", 0);
     serverOpusBitrate = preferences.getString("bitrate", "mid");
     
@@ -183,33 +253,35 @@ void initializeAudioObjects() {
     if (!encoder) encoder = new EncodedAudioStream(wsPrint, opus);
     if (!copier) copier = new StreamCopy(*encoder, in);
 
-    auto cfg2 = i2s2.defaultConfig(TX_MODE);
-    cfg2.pin_bck = pinBclk;
-    cfg2.pin_ws = pinLrc;
-    cfg2.pin_data = pinDout;
-    cfg2.channels = 2;
-    cfg2.bits_per_sample = 16;
-    cfg2.sample_rate = 44100;
-    i2s2.begin(cfg2);
+    auto cfg = i2s.defaultConfig(TX_MODE);
+    cfg.pin_bck = pinBclk;
+    cfg.pin_ws = pinLrc;
+    cfg.pin_data = pinDout;
+    cfg.channels = 2;
+    cfg.bits_per_sample = 16;
+    cfg.sample_rate = 44100;
+    i2s.begin(cfg);
+    if (!usbToDacCopier) usbToDacCopier = new StreamCopy(i2s, in);
+}
 
-    if (!usbToDacCopier) usbToDacCopier = new StreamCopy(i2s2, in);
+void handleSettings(); // Forward declaration
 
-    if (!radioStream) radioStream = new URLStream(serverWifiSsid.c_str(), serverWifiPass.c_str());
-    if (!radioToEncoderCopier && radioStream && encoder) {
-        radioToEncoderCopier = new StreamCopy(*encoder, *radioStream);
+void handleRoot() { 
+    if (serverWifiSsid.length() == 0) {
+        handleSettings();
+    } else {
+        server.send(200, "text/html", getControlPageTemplate(serverFriendlyName.c_str())); 
     }
 }
 
-void handleRoot() { server.send(200, "text/html", CONTROL_HTML); }
 void handlePlayer() { server.send(200, "text/html", PLAYER_HTML); }
+
 void handleSettings() {
+    String mdnsHost = serverFriendlyName + ".local";
     String html = getWebPageTemplate(
-        serverThemeMode.c_str(), "Enkelvoud", "Enkelvoud",
+        serverFriendlyName.c_str(), mdnsHost.c_str(),
         serverWifiSsid.c_str(), serverWifiPass.c_str(), serverUseStaticIp,
-        serverStaticIp.c_str(), serverStaticGw.c_str(), serverStaticSn.c_str(), serverStaticDns.c_str(),
-        pinLrc, pinDout, pinBclk,
-        pinAuxLrc, pinAuxDin, pinAuxBclk, pinBtLrc, pinBtDin, pinBtBclk,
-        serverVolumeMultiplier
+        serverStaticIp.c_str(), serverStaticGw.c_str(), serverStaticSn.c_str(), serverStaticDns.c_str()
     );
     server.send(200, "text/html", html);
 }
@@ -303,17 +375,19 @@ void handleSaveSettings() {
     preferences.begin("enkelvoud", false);
     preferences.putString("s_ver", SETTINGS_VERSION);
 
-    if (server.hasArg("reset_defaults") && server.arg("reset_defaults") == "on") {
-        preferences.clear();
-        preferences.putString("s_ver", SETTINGS_VERSION);
+    if (server.hasArg("restart_device") && server.arg("restart_device") == "on") {
         preferences.end();
-        server.send(200, "text/plain", "Defaults Reset and Restarting");
+        server.send(200, "text/plain", "Restarting");
         delay(500);
         ESP.restart();
         return;
     }
 
     if (server.hasArg("theme_mode")) { serverThemeMode = server.arg("theme_mode"); preferences.putString("theme", serverThemeMode); }
+    if (server.hasArg("friendly_name")) { 
+        serverFriendlyName = sanitizeAlphanumeric(server.arg("friendly_name")); 
+        preferences.putString("srv_name", serverFriendlyName); 
+    }
     if (server.hasArg("ssid")) { serverWifiSsid = server.arg("ssid"); preferences.putString("ssid", serverWifiSsid); }
     if (server.hasArg("pass")) { serverWifiPass = server.arg("pass"); preferences.putString("pass", serverWifiPass); }
 
@@ -324,23 +398,6 @@ void handleSaveSettings() {
     if (server.hasArg("static_gw")) { serverStaticGw = server.arg("static_gw"); preferences.putString("s_gw", serverStaticGw); }
     if (server.hasArg("static_sn")) { serverStaticSn = server.arg("static_sn"); preferences.putString("s_sn", serverStaticSn); }
     if (server.hasArg("static_dns")) { serverStaticDns = server.arg("static_dns"); preferences.putString("s_dns", serverStaticDns); }
-
-    if (server.hasArg("lrc")) { pinLrc = server.arg("lrc").toInt(); preferences.putInt("lrc", pinLrc); }
-    if (server.hasArg("dout")) { pinDout = server.arg("dout").toInt(); preferences.putInt("dout", pinDout); }
-    if (server.hasArg("bclk")) { pinBclk = server.arg("bclk").toInt(); preferences.putInt("bclk", pinBclk); }
-
-    if (server.hasArg("aux_lrc")) { pinAuxLrc = server.arg("aux_lrc").toInt(); preferences.putInt("aux_lrc", pinAuxLrc); }
-    if (server.hasArg("aux_din")) { pinAuxDin = server.arg("aux_din").toInt(); preferences.putInt("aux_din", pinAuxDin); }
-    if (server.hasArg("aux_bclk")) { pinAuxBclk = server.arg("aux_bclk").toInt(); preferences.putInt("aux_bclk", pinAuxBclk); }
-
-    if (server.hasArg("bt_lrc")) { pinBtLrc = server.arg("bt_lrc").toInt(); preferences.putInt("bt_lrc", pinBtLrc); }
-    if (server.hasArg("bt_din")) { pinBtDin = server.arg("bt_din").toInt(); preferences.putInt("bt_din", pinBtDin); }
-    if (server.hasArg("bt_bclk")) { pinBtBclk = server.arg("bt_bclk").toInt(); preferences.putInt("bt_bclk", pinBtBclk); }
-
-    if (server.hasArg("node_vol")) {
-        serverVolumeMultiplier = server.arg("node_vol").toFloat() / 100.0f;
-        preferences.putFloat("vol", serverVolumeMultiplier);
-    }
 
     preferences.end();
     server.send(200, "text/plain", "Saved and Restarting");
@@ -356,23 +413,55 @@ void handleApiReset() {
     ESP.restart();
 }
 
+void handleApiServerName() {
+    if (server.hasArg("plain")) {
+        String body = server.arg("plain");
+        int nameIdx = body.indexOf("\"name\":\"");
+        if (nameIdx != -1) {
+            nameIdx += 8;
+            int endQuote = body.indexOf("\"", nameIdx);
+            if (endQuote != -1) {
+                serverFriendlyName = sanitizeAlphanumeric(body.substring(nameIdx, endQuote));
+                preferences.begin("enkelvoud", false);
+                preferences.putString("s_ver", SETTINGS_VERSION);
+                preferences.putString("srv_name", serverFriendlyName);
+                preferences.end();
+                logAction("handleApiServerName", "SYS", "Friendly server name changed to: " + serverFriendlyName);
+            }
+        }
+    }
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
 void handleApiState() {
     String json = "{";
+    json += "\"server_name\": \"" + serverFriendlyName + "\",";
     json += "\"host_muted\": " + String(hostMuted ? "true" : "false") + ",";
     json += "\"streaming_enabled\": " + String(serverStreamingEnabled ? "true" : "false") + ",";
     json += "\"audio_input\": \"" + serverAudioInputMode + "\",";
     json += "\"audio_buffer\": " + String(serverAudioBuffer) + ",";
     json += "\"bitrate\": \"" + serverOpusBitrate + "\",";
+    json += "\"wifi_ssid\": \"" + serverWifiSsid + "\",";
+    json += "\"wifi_pass\": \"" + serverWifiPass + "\",";
+    json += "\"use_static\": " + String(serverUseStaticIp ? "true" : "false") + ",";
+    json += "\"static_ip\": \"" + serverStaticIp + "\",";
+    json += "\"static_gw\": \"" + serverStaticGw + "\",";
+    json += "\"static_sn\": \"" + serverStaticSn + "\",";
+    json += "\"static_dns\": \"" + serverStaticDns + "\",";
     json += "\"logs\": [";
-    for (size_t i = 0; i < recentLogs.size(); ++i) {
+    
+    size_t totalLogs = recentLogs.size();
+    size_t startIndex = (totalLogs > 15) ? (totalLogs - 15) : 0;
+    
+    for (size_t i = startIndex; i < totalLogs; ++i) {
         String logLine = recentLogs[i];
         logLine.replace("\"", "\\\"");
         json += "\"" + logLine + "\"";
-        if (i < recentLogs.size() - 1) json += ",";
+        if (i < totalLogs - 1) json += ",";
     }
     json += "],";
     json += "\"nodes\": {";
-    json += "\"esp32_node_1\": {\"name\": \"Enkelvoud Node\", \"ip\": \"" + WiFi.localIP().toString() + "\", \"group\": \"Default Room\", \"muted\": false}";
+    json += "\"esp32_node_1\": {\"name\": \"Enkelvoud Node\", \"ip\": \"" + WiFi.localIP().toString() + "\", \"group\": \"Main Room\", \"muted\": false}";
     json += "}}";
     server.send(200, "application/json", json);
 }
@@ -385,10 +474,6 @@ void handleApiControl() {
         }
         else if (body.indexOf("toggle_streaming") != -1) {
             serverStreamingEnabled = !serverStreamingEnabled;
-            preferences.begin("enkelvoud", false);
-            preferences.putString("s_ver", SETTINGS_VERSION);
-            preferences.putBool("streaming", serverStreamingEnabled);
-            preferences.end();
         }
         else if (body.indexOf("set_buffer") != -1) {
             int bufIdx = body.indexOf("\"buffer\":");
@@ -425,8 +510,7 @@ void handleApiControl() {
         }
         else if (body.indexOf("set_audio_input") != -1) {
             String newMode = serverAudioInputMode;
-            if (body.indexOf("\"input\":\"Stream Radio Test\"") != -1) newMode = "Stream Radio Test";
-            else if (body.indexOf("\"input\":\"USB\"") != -1) newMode = "USB";
+            if (body.indexOf("\"input\":\"USB\"") != -1) newMode = "USB";
             else if (body.indexOf("\"input\":\"Bluetooth\"") != -1) newMode = "Bluetooth";
             else if (body.indexOf("\"input\":\"AUX in\"") != -1) newMode = "AUX in";
             else if (body.indexOf("\"input\":\"None\"") != -1) newMode = "None";
@@ -445,6 +529,16 @@ void handleApiControl() {
 }
 
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {}
+
+// Dedicated FreeRTOS task for audio loops to isolate stack usage from loopTask
+void audioProcessingTask(void *pvParameters) {
+    while (true) {
+        handleUSBInputLoop();
+        handleBluetoothInputLoop();
+        handleAuxInputLoop();
+        vTaskDelay(pdMS_TO_TICKS(1)); // Yield to prevent core starvation and watchdog triggers
+    }
+}
 
 void setup() {
     Serial.begin(115200);
@@ -476,25 +570,11 @@ void setup() {
     }
 
     if (!connectedToNetwork) {
-        WiFi.mode(WIFI_AP);
+        WiFi.mode(WIFI_AP_STA); // Enable both so AP works even if STA tried to connect
         WiFi.softAPConfig(ap_local_ip, ap_gateway, ap_subnet);
         WiFi.softAP(default_ap_ssid, default_ap_password);
-        serverAudioInputMode = "None";
+        logAction("setup", "NET", "Failed to connect to STA. Started AP: " + String(default_ap_ssid));
     }
-
-    Serial.println("\n========================================");
-    Serial.println("       ENKELVOUD NETWORK SETTINGS       ");
-    Serial.println("========================================");
-    Serial.printf("Wi-Fi Mode        : %s\n", (WiFi.getMode() == WIFI_STA ? "STA (Station)" : (WiFi.getMode() == WIFI_AP ? "AP (Access Point)" : "AP+STA")));
-    Serial.printf("Connected SSID    : %s\n", connectedToNetwork ? serverWifiSsid.c_str() : default_ap_ssid);
-    Serial.printf("IP Address        : %s\n", connectedToNetwork ? WiFi.localIP().toString().c_str() : WiFi.softAPIP().toString().c_str());
-    Serial.printf("Gateway IP        : %s\n", connectedToNetwork ? WiFi.gatewayIP().toString().c_str() : ap_gateway.toString().c_str());
-    Serial.printf("Subnet Mask       : %s\n", connectedToNetwork ? WiFi.subnetMask().toString().c_str() : ap_subnet.toString().c_str());
-    Serial.printf("Primary DNS       : %s\n", WiFi.dnsIP(0).toString().c_str());
-    Serial.printf("Secondary DNS     : %s\n", WiFi.dnsIP(1).toString().c_str());
-    Serial.printf("MAC Address       : %s\n", WiFi.macAddress().c_str());
-    Serial.printf("Use Static Config : %s\n", serverUseStaticIp ? "YES" : "NO");
-    Serial.println("========================================\n");
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/player", HTTP_GET, handlePlayer);
@@ -503,27 +583,48 @@ void setup() {
     server.on("/api/test_wifi", HTTP_POST, handleApiTestWifi);
     server.on("/api/volume", HTTP_POST, handleApiVolume);
     server.on("/api/reset", HTTP_POST, handleApiReset);
+    server.on("/api/server_name", HTTP_POST, handleApiServerName);
     server.on("/save", HTTP_POST, handleSaveSettings);
     server.on("/cancel", HTTP_POST, handleCancelSettings);
     server.on("/api/state", HTTP_GET, handleApiState);
     server.on("/api/control", HTTP_POST, handleApiControl);
 
+    if (!MDNS.begin(serverFriendlyName.c_str())) {
+            Serial.println("Error setting up MDNS responder!");
+            logAction("setup", "MDNS", "Error setting up MDNS responder");
+        } else {
+            Serial.println("mDNS responder started: http://" + serverFriendlyName + ".local");
+            logAction("setup", "MDNS", "mDNS responder started successfully");
+            MDNS.addService("http", "tcp", 80);
+        }
+
     server.begin();
     webSocket.begin();
     webSocket.onEvent(webSocketEvent);
 
-    if (opus) opus->begin();
+    if (opus) {
+        auto &cfg = opus->config();
+        cfg.sample_rate = currentAudioInfo.sample_rate;
+        cfg.channels = currentAudioInfo.channels;
+        cfg.bits_per_sample = currentAudioInfo.bits_per_sample;
+        opus->begin(cfg);
+    }
     if (encoder) encoder->begin(currentAudioInfo);
+
+    // Create a dedicated background task for audio streaming on Core 0 with an 8KB stack
+    xTaskCreatePinnedToCore(
+        audioProcessingTask,
+        "AudioTask",
+        8192,
+        NULL,
+        1,
+        &audioTaskHandle,
+        0
+    );
 }
 
 void loop() {
     server.handleClient();
     webSocket.loop();
-
-    checkIncomingStream();
-
-    handleUSBInputLoop();
-    handleBluetoothInputLoop();
-    handleAuxInputLoop();
-    handleStreamInputLoop();
+    delay(1); // Yield main loop task to keep watchdog happy
 }
