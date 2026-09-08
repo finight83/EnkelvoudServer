@@ -1,6 +1,14 @@
 #ifndef EVDCTRL_H
 #define EVDCTRL_H
 
+/*
+  EVDCTRL.h - Control panel page (served at "/" and "/control").
+  Pure front-end: returns one big HTML/CSS/JS string (getControlPageTemplate)
+  that polls GET /api/state and posts actions to POST /api/control, /save,
+  etc. All request handling lives in EnkelvoudServer.ino - this file has no
+  server-side logic of its own.
+*/
+
 #include <Arduino.h>
 
 inline String getControlPageTemplate(const char* friendly_name) {
@@ -525,6 +533,15 @@ inline String getControlPageTemplate(const char* friendly_name) {
                         <label style="font-size: 0.85rem; margin-top: 8px;">DNS Server:</label>
                         <input type="text" id="dnsInput" name="static_dns" class="modal-input" style="margin-top: 4px;">
                     </div>
+                </div>
+
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 5px 0;">
+
+                <div>
+                    <label style="font-size: 0.9rem; font-weight: 600; margin-bottom: 8px; display: block;">Receiver ESP32</label>
+                    <label style="font-size: 0.85rem;">Receiver IP or Hostname:</label>
+                    <input type="text" id="receiverHostInput" name="receiver_host" class="modal-input" style="margin-top: 4px;" placeholder="e.g. 192.168.1.60 or enkelvoud-receiver.local">
+                    <label style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; display: block;">The BT/AUX/USB source-select board this server sends input-switch commands to.</label>
                 </div>
             </div>
             <div class="modal-buttons" style="margin-top: 10px;">
