@@ -2,34 +2,20 @@
 #define EVDUSB_H
 
 #include <Arduino.h>
-#include "AudioTools.h"
-#include "AudioTools/Communication/USB/USBAudioStream.h"
-
-using namespace audio_tools;
+#include "EVDSRC.h"
 
 extern String serverAudioInputMode;
-extern bool hostMuted;
-extern bool serverStreamingEnabled;
 extern void logAction(const String& functionName, const String& eventType, const String& details);
 
-extern USBAudioStream in;
-extern StreamCopy* copier;            
-extern StreamCopy* usbToDacCopier;   
-
+// USB speaker capture lives on the source ESP32; this server never enumerates as USB audio.
 inline void setupUSBInput() {
-    logAction("handleUSBInputLoop", "USB_OK", "USB input module initialized.");
+    logAction("setupUSBInput", "USB_OK",
+              "USB is selected on the source ESP32. This board only receives the forwarded I2S stream.");
 }
 
+// USB switching is handled by source-select commands, not a local USB gadget on the server.
 inline void handleUSBInputLoop() {
-    if (serverAudioInputMode != "USB") return;
-
-    if (!hostMuted) {
-        if (usbToDacCopier) usbToDacCopier->copy();
-    }
-
-    if (serverStreamingEnabled && !hostMuted) {
-        if (copier) copier->copy();
-    }
+    (void)serverAudioInputMode;
 }
 
 #endif

@@ -177,6 +177,11 @@ inline String getControlPageTemplate(const char* friendly_name) {
             gap: 12px;
             transition: border-color 0.2s, background-color 0.2s;
         }
+        
+        .group-container.drag-over {
+            border: 2px dashed var(--accent-color);
+            background-color: rgba(56, 189, 248, 0.05);
+        }
 
         .group-header {
             display: flex;
@@ -243,6 +248,16 @@ inline String getControlPageTemplate(const char* friendly_name) {
             align-items: center;
             flex-wrap: wrap;
             gap: 10px;
+            cursor: grab;
+            transition: transform 0.15s, opacity 0.15s;
+        }
+        
+        .node-item:active {
+            cursor: grabbing;
+        }
+        
+        .node-item.dragging {
+            opacity: 0.4;
         }
 
         .node-info-inline {
@@ -276,6 +291,25 @@ inline String getControlPageTemplate(const char* friendly_name) {
 
         .node-ip-link:hover {
             text-decoration: underline;
+        }
+
+        .node-ip-text {
+            color: var(--text-muted);
+        }
+
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .status-badge.connected {
+            background-color: rgba(34, 197, 94, 0.2);
+            color: var(--success-color);
+        }
+        .status-badge.disconnected {
+            background-color: rgba(244, 63, 94, 0.2);
+            color: var(--danger-color);
         }
 
         button.action-btn {
@@ -381,29 +415,22 @@ inline String getControlPageTemplate(const char* friendly_name) {
             gap: 10px;
         }
 
-        .collapsible-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            font-weight: bold;
+        .gear-btn {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            border-radius: 6px;
+            padding: 7px 10px;
             font-size: 1rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.2s, border-color 0.2s;
         }
-
-        .collapsible-content {
-            display: none;
-        }
-
-        .collapsible-content.open {
-            display: block;
-        }
-
-        .arrow {
-            transition: transform 0.2s;
-        }
-
-        .arrow.open {
-            transform: rotate(180deg);
+        .gear-btn:hover {
+            background-color: var(--border-color);
+            border-color: var(--accent-color);
         }
 
         .row-group {
@@ -427,70 +454,21 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 </select>
             </div>
             <div class="header-controls">
+                <button class="action-btn danger" id="restartTopBtn" onclick="restartDevice()" title="Restart ESP32-S3">🔄 Restart</button>
                 <select class="theme-select" id="themeSelector" onchange="changeTheme(this.value)">
                     <option value="black">Black (Default)</option>
                     <option value="light">Light</option>
                     <option value="blue">Blue</option>
                 </select>
-                <button class="btn-primary" onclick="createNewGroup()">+ New Group</button>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="collapsible-header" onclick="toggleAdvancedSection()">
-                <span>Advanced</span>
-                <span id="advancedArrow" class="arrow">&#9660;</span>
-            </div>
-            <div id="advancedSection" class="collapsible-content" style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px;">
-                <div style="display: flex; flex-direction: column; gap: 15px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-                        <button class="btn-primary" id="bitrateBtn" onclick="cycleBitrate()">Bitrate: mid</button>
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <label style="font-size: 0.85rem; font-weight: 600;">Buffer:</label>
-                            <input type="range" id="bufferSlider" min="0" max="200" value="0" style="accent-color: var(--accent-color); width: 110px; cursor: pointer;" oninput="document.getElementById('bufferLabel').innerText = this.value" onchange="changeBuffer(this.value)">
-                            <span style="font-size: 0.85rem; min-width: 35px;"><span id="bufferLabel">0</span>ms</span>
-                        </div>
-                        <button class="action-btn danger" onclick="resetDevice()" title="Reset ESP32">🔄 Reset</button>
-                    </div>
-
-                    <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 5px 0;">
-
-                    <div>
-                        <label style="font-size: 0.9rem; font-weight: 600; margin-bottom: 8px; display: block;">Network Settings</label>
-                        <label style="font-size: 0.85rem;">Wi-Fi SSID:</label>
-                        <div class="row-group" style="margin-top: 4px;">
-                            <input type="text" id="ssidInput" name="ssid" class="modal-input" placeholder="Enter SSID">
-                            <button type="button" class="btn-primary" onclick="openWifiModal()" style="white-space: nowrap;">Wi-Fi Search</button>
-                        </div>
-                        <label style="font-size: 0.85rem; margin-top: 8px;">Wi-Fi Password:</label>
-                        <div class="row-group" style="margin-top: 4px;">
-                            <input type="password" id="passInput" name="pass" class="modal-input">
-                            <button type="button" class="btn-primary" id="testBtn" onclick="testWifiConnection()" style="white-space: nowrap; background-color: var(--text-muted);">Test Connection</button>
-                        </div>
-                        <div id="wifiTestResult" style="font-size: 0.85rem; margin-top: 6px;"></div>
-                        <label style="display: flex; align-items: center; gap: 10px; margin-top: 10px; cursor: pointer; font-size: 0.85rem;">
-                            <input type="checkbox" id="staticCheck" name="use_static" onchange="toggleStaticIp()" style="width: 16px; height: 16px; accent-color: var(--accent-color);"> Use Static IP Configuration
-                        </label>
-                        <div id="staticIpFields" style="display: none; margin-top: 8px;">
-                            <label style="font-size: 0.85rem;">Static IP Address:</label>
-                            <input type="text" id="staticIpInput" name="static_ip" class="modal-input" style="margin-top: 4px;">
-                            <label style="font-size: 0.85rem; margin-top: 8px;">Gateway IP:</label>
-                            <input type="text" id="gatewayInput" name="static_gw" class="modal-input" style="margin-top: 4px;">
-                            <label style="font-size: 0.85rem; margin-top: 8px;">Subnet Mask:</label>
-                            <input type="text" id="subnetInput" name="static_sn" class="modal-input" style="margin-top: 4px;">
-                            <label style="font-size: 0.85rem; margin-top: 8px;">DNS Server:</label>
-                            <input type="text" id="dnsInput" name="static_dns" class="modal-input" style="margin-top: 4px;">
-                        </div>
-                        <button type="button" class="btn-primary" onclick="saveNetworkSettings()" style="margin-top: 12px;">Save Network Settings</button>
-                    </div>
-                </div>
+                <a href="/player" class="action-btn" title="Audio Player" style="text-decoration: none;">🔊 Player</a>
+                <button class="gear-btn" onclick="openAdvancedModal()" title="Advanced Settings">⚙️</button>
             </div>
         </div>
 
         <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <h2 style="font-size: 1.2rem; margin: 0;">Rooms & Nodes</h2>
-                <a href="/player" class="action-btn" title="Audio Player" style="text-decoration: none;">🔊 Player</a>
+                <button class="btn-primary" onclick="createNewGroup()">+ New Group</button>
             </div>
             <div id="groupList">
                 <div style="color: var(--text-muted); font-size: 0.85rem;" id="scanningMessage">Loading nodes from configuration...</div>
@@ -499,8 +477,59 @@ inline String getControlPageTemplate(const char* friendly_name) {
 
         <div class="card">
             <h3 style="font-size: 1rem; margin-top: 0; margin-bottom: 10px; color: var(--text-color);">Event & Error Log</h3>
-            <div class="log-window" id="logWindow" style="height: 40px; overflow: hidden;">
+            <div class="log-window" id="logWindow">
                 <div>Waiting for logs from server...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Advanced Settings Modal -->
+    <div class="modal-overlay" id="advancedModal">
+        <div class="modal-dialog" style="max-width: 550px; max-height: 90vh; overflow-y: auto;">
+            <h3 class="modal-title">Advanced Settings</h3>
+            <div style="display: flex; flex-direction: column; gap: 15px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                    <button class="btn-primary" id="bitrateBtn" onclick="cycleBitrate()">Bitrate: mid</button>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label style="font-size: 0.85rem; font-weight: 600;">Buffer:</label>
+                        <input type="range" id="bufferSlider" min="0" max="200" value="0" style="accent-color: var(--accent-color); width: 110px; cursor: pointer;" oninput="document.getElementById('bufferLabel').innerText = this.value" onchange="changeBuffer(this.value)">
+                        <span style="font-size: 0.85rem; min-width: 35px;"><span id="bufferLabel">0</span>ms</span>
+                    </div>
+                </div>
+
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 5px 0;">
+
+                <div>
+                    <label style="font-size: 0.9rem; font-weight: 600; margin-bottom: 8px; display: block;">Network Settings</label>
+                    <label style="font-size: 0.85rem;">Wi-Fi SSID:</label>
+                    <div class="row-group" style="margin-top: 4px;">
+                        <input type="text" id="ssidInput" name="ssid" class="modal-input" placeholder="Enter SSID">
+                        <button type="button" class="btn-primary" onclick="openWifiModal()" style="white-space: nowrap;">Wi-Fi Search</button>
+                    </div>
+                    <label style="font-size: 0.85rem; margin-top: 8px;">Wi-Fi Password:</label>
+                    <div class="row-group" style="margin-top: 4px;">
+                        <input type="password" id="passInput" name="pass" class="modal-input">
+                        <button type="button" class="btn-primary" id="testBtn" onclick="testWifiConnection()" style="white-space: nowrap; background-color: var(--text-muted);">Test Connection</button>
+                    </div>
+                    <div id="wifiTestResult" style="font-size: 0.85rem; margin-top: 6px;"></div>
+                    <label style="display: flex; align-items: center; gap: 10px; margin-top: 10px; cursor: pointer; font-size: 0.85rem;">
+                        <input type="checkbox" id="staticCheck" name="use_static" onchange="toggleStaticIp()" style="width: 16px; height: 16px; accent-color: var(--accent-color);"> Use Static IP Configuration
+                    </label>
+                    <div id="staticIpFields" style="display: none; margin-top: 8px;">
+                        <label style="font-size: 0.85rem;">Static IP Address:</label>
+                        <input type="text" id="staticIpInput" name="static_ip" class="modal-input" style="margin-top: 4px;">
+                        <label style="font-size: 0.85rem; margin-top: 8px;">Gateway IP:</label>
+                        <input type="text" id="gatewayInput" name="static_gw" class="modal-input" style="margin-top: 4px;">
+                        <label style="font-size: 0.85rem; margin-top: 8px;">Subnet Mask:</label>
+                        <input type="text" id="subnetInput" name="static_sn" class="modal-input" style="margin-top: 4px;">
+                        <label style="font-size: 0.85rem; margin-top: 8px;">DNS Server:</label>
+                        <input type="text" id="dnsInput" name="static_dns" class="modal-input" style="margin-top: 4px;">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-buttons" style="margin-top: 10px;">
+                <button class="action-btn" onclick="closeAdvancedModal()">Cancel</button>
+                <button class="btn-primary" onclick="saveAdvancedSettingsModal()">Save</button>
             </div>
         </div>
     </div>
@@ -516,7 +545,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
         </div>
     </div>
 
-    <div class="modal-overlay" id="serverRenameModal">streamToggleBtn
+    <div class="modal-overlay" id="serverRenameModal">
         <div class="modal-dialog">
             <h3 class="modal-title">Change Friendly Server Name</h3>
             <input type="text" class="modal-input" id="serverRenameInput" placeholder="Enter new server name" pattern="[a-zA-Z0-9]+" title="Alphanumeric characters only (no spaces)">
@@ -549,6 +578,31 @@ inline String getControlPageTemplate(const char* friendly_name) {
         let isSlidingBuffer = false;
         let currentBitrate = 'mid';
         const bitrates = ['low', 'mid', 'high'];
+        let saveTimeout = null;
+
+        function triggerNvmAutoSave() {
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(async () => {
+                const formData = new URLSearchParams();
+                formData.append('ssid', document.getElementById('ssidInput').value);
+                formData.append('pass', document.getElementById('passInput').value);
+                if (document.getElementById('staticCheck').checked) {
+                    formData.append('use_static', 'on');
+                    formData.append('static_ip', document.getElementById('staticIpInput').value);
+                    formData.append('static_gw', document.getElementById('gatewayInput').value);
+                    formData.append('static_sn', document.getElementById('subnetInput').value);
+                    formData.append('static_dns', document.getElementById('dnsInput').value);
+                }
+                formData.append('friendly_name', document.getElementById('serverTitleBtn').textContent.trim());
+                try {
+                    await fetch('/save', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: formData
+                    });
+                } catch (e) {}
+            }, 15000);
+        }
 
         function openServerRenameModal() {
             const btn = document.getElementById('serverTitleBtn');
@@ -576,6 +630,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name: newName })
                 });
+                triggerNvmAutoSave();
                 alert('Server name updated successfully.');
                 window.location.reload();
             } catch (e) {
@@ -587,17 +642,21 @@ inline String getControlPageTemplate(const char* friendly_name) {
             if (e.key === 'Enter') submitServerRename();
         });
 
-        function toggleAdvancedSection() {
-            document.getElementById('advancedSection').classList.toggle('open');
-            document.getElementById('advancedArrow').classList.toggle('open');
+        function openAdvancedModal() {
+            document.getElementById('advancedModal').classList.add('active');
+        }
+
+        function closeAdvancedModal() {
+            document.getElementById('advancedModal').classList.remove('active');
         }
 
         function toggleStaticIp() {
             const isChecked = document.getElementById('staticCheck').checked;
             document.getElementById('staticIpFields').style.display = isChecked ? 'block' : 'none';
+            triggerNvmAutoSave();
         }
 
-        async function saveNetworkSettings() {
+        async function saveAdvancedSettingsModal() {
             const formData = new URLSearchParams();
             formData.append('ssid', document.getElementById('ssidInput').value);
             formData.append('pass', document.getElementById('passInput').value);
@@ -608,7 +667,6 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 formData.append('static_sn', document.getElementById('subnetInput').value);
                 formData.append('static_dns', document.getElementById('dnsInput').value);
             }
-            formData.append('restart_device', 'on');
 
             try {
                 await fetch('/save', {
@@ -651,6 +709,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
         function selectNetwork(ssid) {
             document.getElementById('ssidInput').value = ssid;
             closeWifiModal();
+            triggerNvmAutoSave();
         }
 
         async function testWifiConnection() {
@@ -687,6 +746,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'set_bitrate', bitrate: currentBitrate })
             });
+            triggerNvmAutoSave();
             fetchState();
         }
 
@@ -710,18 +770,19 @@ inline String getControlPageTemplate(const char* friendly_name) {
             return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         }
 
-        async function resetDevice() {
-            if (!confirm("Are you sure you want to reset the ESP32-S3 server?")) return;
+        async function restartDevice() {
+            if (!confirm("Restart server?")) return;
             try {
                 await fetch('/api/reset', { method: 'POST' });
             } catch (e) {}
-            alert('Server is resetting...');
+            alert('Server is restarting...');
             setTimeout(() => { window.location.reload(); }, 4000);
         }
 
         async function fetchState() {
             if (document.getElementById('renameModal').classList.contains('active')) return;
             if (document.getElementById('serverRenameModal').classList.contains('active')) return;
+            if (document.getElementById('advancedModal').classList.contains('active')) return;
             if (activeSliderGroup !== null) return;
 
             try {
@@ -769,7 +830,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
 
                 const streamBtn = document.getElementById('streamToggleBtn');
                 streamBtn.textContent = "Streaming";
-                streamBtn.style.backgroundColor = data.streaming_enabled ? "#166534" : "#991b1b"; // Green when streaming, red when not
+                streamBtn.style.backgroundColor = data.streaming_enabled ? "#166534" : "#991b1b";
 
                 const audioInputSelect = document.getElementById('audioInputSelect');
                 if (data.audio_input && document.activeElement !== audioInputSelect) {
@@ -781,9 +842,13 @@ inline String getControlPageTemplate(const char* friendly_name) {
                     document.getElementById('bufferLabel').innerText = data.audio_buffer;
                 }
 
-                if (data.logs && Array.isArray(data.logs) && data.logs.length > 0) {
-                    const latestLog = data.logs[data.logs.length - 1];
-                    logWindow.innerHTML = `<div>${escapeHtml(latestLog)}</div>`;
+                if (data.logs && Array.isArray(data.logs)) {
+                    let logHtml = '';
+                    data.logs.forEach(log => {
+                        logHtml += `<div>${escapeHtml(log)}</div>`;
+                    });
+                    logWindow.innerHTML = logHtml;
+                    logWindow.scrollTop = logWindow.scrollHeight;
                 }
 
                 renderGroupsAndNodes(currentNodesData);
@@ -818,6 +883,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'set_audio_input', input: mode })
             });
+            triggerNvmAutoSave();
             fetchState();
         }
 
@@ -830,6 +896,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 body: JSON.stringify({ action: 'set_buffer', buffer: parseInt(val) })
             });
             isSlidingBuffer = false;
+            triggerNvmAutoSave();
             fetchState();
         }
 
@@ -913,9 +980,6 @@ inline String getControlPageTemplate(const char* friendly_name) {
             for (const [uuid, info] of Object.entries(nodes)) {
                 const g = info.group || 'Main Room';
                 if (!groups[g]) groups[g] = [];
-                if (g === 'Main Room' && (uuid === 'esp32_node_1' || info.name === 'Enkelvoud Node')) {
-                    continue;
-                }
                 groups[g].push({ uuid, ...info });
             }
 
@@ -926,7 +990,7 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 const isMain = (groupName === 'Main Room');
 
                 html += `
-                    <div class="group-container">
+                    <div class="group-container" ondragover="allowDrop(event)" ondragleave="removeDropStyle(event)" ondrop="dropNode(event, '${escapeHtml(groupName)}')">
                         <div class="group-header">
                             <div class="group-title-wrapper">
                                 <button class="group-title-clickable" onclick="openRenameModal('${escapeHtml(groupName)}')">${escapeHtml(groupName)}</button>
@@ -947,13 +1011,30 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 `;
 
                 nodeList.forEach(node => {
+                    const isServerNode = (node.uuid === 'server_node' || node.is_server);
+                    const statusClass = node.connected ? 'connected' : 'disconnected';
+                    const statusText = node.connected ? 'Connected' : 'Disconnected';
+
                     html += `
-                        <div class="node-item">
+                        <div class="node-item" draggable="true" ondragstart="dragNode(event, '${node.uuid}')" ondragend="endDragNode(event)">
                             <div class="node-info-inline">
                                 <span class="node-name">${escapeHtml(node.name || 'Node')}</span>
+                                <span class="status-badge ${statusClass}">${statusText}</span>
                                 <div class="node-ip-container">
-                                    <a class="node-ip-link" href="http://${node.ip}" target="_blank">${node.ip}</a>
-                                    <button class="action-btn danger" onclick="deleteNode('${node.uuid}')">Remove</button>
+                    `;
+
+                    if (isServerNode) {
+                        html += `<span class="node-ip-text">${node.ip}</span>`;
+                    } else {
+                        if (node.connected) {
+                            html += `<a class="node-ip-link" href="http://${node.ip}" target="_blank">${node.ip}</a>`;
+                        } else {
+                            html += `<span class="node-ip-text">${node.ip}</span>`;
+                        }
+                        html += `<button class="action-btn danger" onclick="deleteNode('${node.uuid}')">Remove</button>`;
+                    }
+
+                    html += `
                                 </div>
                             </div>
                         </div>
@@ -966,6 +1047,38 @@ inline String getControlPageTemplate(const char* friendly_name) {
                 `;
             }
             groupList.innerHTML = html;
+        }
+
+        function dragNode(event, uuid) {
+            event.dataTransfer.setData('text/plain', uuid);
+            event.currentTarget.classList.add('dragging');
+        }
+
+        function endDragNode(event) {
+            event.currentTarget.classList.remove('dragging');
+        }
+
+        function allowDrop(event) {
+            event.preventDefault();
+            event.currentTarget.classList.add('drag-over');
+        }
+
+        function removeDropStyle(event) {
+            event.currentTarget.classList.remove('drag-over');
+        }
+
+        async function dropNode(event, targetGroup) {
+            event.preventDefault();
+            event.currentTarget.classList.remove('drag-over');
+            const nodeUuid = event.dataTransfer.getData('text/plain');
+            if (!nodeUuid) return;
+
+            await fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'move_node', node_uuid: nodeUuid, group: targetGroup })
+            });
+            fetchState();
         }
 
         async function updateGroupVolume(groupName, val) {

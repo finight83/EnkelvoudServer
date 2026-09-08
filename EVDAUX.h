@@ -2,39 +2,20 @@
 #define EVDAUX_H
 
 #include <Arduino.h>
+#include "EVDSRC.h"
 
 extern String serverAudioInputMode;
-extern bool hostMuted;
-extern bool serverStreamingEnabled;
 extern void logAction(const String& functionName, const String& eventType, const String& details);
 
-namespace {
-    unsigned long lastAuxCheckLogTime = 0;
-}
-
+// AUX is captured on the source ESP32 and forwarded over the shared I2S link.
 inline void setupAuxInput() {
-    logAction("handleAuxInputLoop", "AUX_OK", "AUX input module initialized.");
+    logAction("setupAuxInput", "AUX_OK",
+              "AUX in is selected on the source ESP32. This board only receives the forwarded I2S stream.");
 }
 
+// AUX switching is handled by source-select commands, not a local ADC on the server.
 inline void handleAuxInputLoop() {
-    if (serverAudioInputMode != "AUX in") return;
-
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastAuxCheckLogTime > 30000) {
-        lastAuxCheckLogTime = currentMillis;
-        bool auxSignalPresent = true; 
-        if (!auxSignalPresent) {
-            logAction("handleAuxInputLoop", "AUX_WARN", "AUX input selected, but no valid audio input signal detected.");
-        }
-    }
-
-    if (!hostMuted) {
-        // Route AUX audio to DACs
-    }
-
-    if (serverStreamingEnabled && !hostMuted) {
-        // Stream AUX audio to network nodes
-    }
+    (void)serverAudioInputMode;
 }
 
 #endif
