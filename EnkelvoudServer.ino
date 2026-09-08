@@ -12,9 +12,11 @@
       ws://<server-ip>/audio
 
   Added on top of the known-good working audio pipeline:
-    - HTTP GET /        -> EVDCTRL_HTML
-    - HTTP GET /player  -> EVDPLR_HTML
-    - HTTP GET /api/status -> JSON status
+    - HTTP GET /            -> EVDCTRL_HTML
+    - HTTP GET /player      -> EVDPLR_HTML
+    - HTTP GET /api/status  -> JSON status
+    - POST /api/source      -> bridge source selection to upstream receiver
+    - POST /api/cmd         -> bridge command (next/prev/bt/aux/usb) upstream
 
   IMPORTANT
   ---------
@@ -26,9 +28,11 @@
 */
 
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <driver/i2s.h>
+#include <ArduinoJson.h>
 #include "opus.h"
 
 #include "EVDCTRL.h"
@@ -47,6 +51,13 @@ int pinBtBclk = 17;   // I2S Bit Clock (input)
 const char *WIFI_STA_SSID      = "-";
 const char *WIFI_STA_PASSWORD  = "nopassword";
 #define WIFI_CONNECT_TIMEOUT_MS 20000
+
+// ----------------------------------------------------------------------------
+// RECEIVER CONTROL BRIDGE CONFIG (S3 -> EnkelvoudReceiver)
+// ----------------------------------------------------------------------------
+const char *RECEIVER_HOST = "192.168.100.240";   // e.g. receiver IP or "enkelvoudserver.local"
+const uint16_t RECEIVER_PORT = 80;
+const char *RECEIVER_TOKEN = ""; // set if receiver CONTROL_TOKEN is enabled
 
 // ----------------------------------------------------------------------------
 // AUDIO / OPUS CONFIG
@@ -110,6 +121,11 @@ static volatile uint32_t statWsBytesSent    = 0;
 static volatile uint64_t statLatencySumMs   = 0;
 static volatile uint32_t statLatencyCount   = 0;
 static volatile int      wsClientCount      = 0;
+
+// Bridge telemetry.
+static String lastReceiverSource = "unknown";
+static uint16_t lastBridgeHttpCode = 0;
+static String lastBridgeMsg = "";
 
 // ============================================================================
 // RESAMPLER 44.1k -> 48k
@@ -183,6 +199,81 @@ static ResamplerToOpusRate resampler;
 static int16_t pendingBuf[PENDING_MAX_FRAMES * 2];
 static uint32_t pendingCount = 0;
 static uint32_t pendingOldestCapturedMs = 0;
+
+// ============================================================================
+// BRIDGE HELPERS
+// ============================================================================
+/** Escapes quotes/backslashes in strings for safe embedding in JSON literal text. */
+String jsonEscape(const String &s) {
+  String out;
+  out.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '\\' || c == '\"') out += '\\';
+    out += c;
+  }
+  return out;
+}
+
+/** Sends POST /api/source to EnkelvoudReceiver and returns true on HTTP 200. */
+bool bridgeSetReceiverSource(const String &source, String &respBody, uint16_t &httpCode) {
+  if (WiFi.status() != WL_CONNECTED) {
+    respBody = "{\"ok\":false,\"error\":\"wifi_disconnected\"}";
+    httpCode = 0;
+    return false;
+  }
+
+  HTTPClient http;
+  String url = String("http://") + RECEIVER_HOST + ":" + String(RECEIVER_PORT) + "/api/source";
+  if (!http.begin(url)) {
+    respBody = "{\"ok\":false,\"error\":\"http_begin_failed\"}";
+    httpCode = 0;
+    return false;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  if (strlen(RECEIVER_TOKEN) > 0) {
+    http.addHeader("X-EVD-Token", RECEIVER_TOKEN);
+  }
+
+  String payload = String("{\"source\":\"") + source + "\"}";
+  int code = http.POST(payload);
+  httpCode = (uint16_t)((code < 0) ? 0 : code);
+  respBody = (code > 0) ? http.getString() : String("{\"ok\":false,\"error\":\"post_failed\"}");
+  http.end();
+
+  return code == 200;
+}
+
+/** Sends POST /api/cmd to EnkelvoudReceiver and returns true on HTTP 200. */
+bool bridgeSendReceiverCmd(const String &cmd, String &respBody, uint16_t &httpCode) {
+  if (WiFi.status() != WL_CONNECTED) {
+    respBody = "{\"ok\":false,\"error\":\"wifi_disconnected\"}";
+    httpCode = 0;
+    return false;
+  }
+
+  HTTPClient http;
+  String url = String("http://") + RECEIVER_HOST + ":" + String(RECEIVER_PORT) + "/api/cmd";
+  if (!http.begin(url)) {
+    respBody = "{\"ok\":false,\"error\":\"http_begin_failed\"}";
+    httpCode = 0;
+    return false;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  if (strlen(RECEIVER_TOKEN) > 0) {
+    http.addHeader("X-EVD-Token", RECEIVER_TOKEN);
+  }
+
+  String payload = String("{\"cmd\":\"") + cmd + "\"}";
+  int code = http.POST(payload);
+  httpCode = (uint16_t)((code < 0) ? 0 : code);
+  respBody = (code > 0) ? http.getString() : String("{\"ok\":false,\"error\":\"post_failed\"}");
+  http.end();
+
+  return code == 200;
+}
 
 // ============================================================================
 // TASKS
@@ -331,7 +422,7 @@ void onWsEvent(AsyncWebSocket *serverPtr, AsyncWebSocketClient *client,
   }
 }
 
-/** Serves JSON status with pipeline and network counters. */
+/** Serves JSON status with pipeline, network, and bridge counters. */
 void handleApiStatus(AsyncWebServerRequest *request) {
   float avgLatency = statLatencyCount > 0
       ? (float)statLatencySumMs / (float)statLatencyCount
@@ -351,10 +442,86 @@ void handleApiStatus(AsyncWebServerRequest *request) {
   json += "\"opusDropped\":" + String(statOpusDropped) + ",";
   json += "\"wsPacketsSent\":" + String(statWsPacketsSent) + ",";
   json += "\"wsBytesSent\":" + String(statWsBytesSent) + ",";
-  json += "\"avgLatencyMs\":" + String(avgLatency, 2);
+  json += "\"avgLatencyMs\":" + String(avgLatency, 2) + ",";
+  json += "\"receiverHost\":\"" + String(RECEIVER_HOST) + "\",";
+  json += "\"receiverPort\":" + String(RECEIVER_PORT) + ",";
+  json += "\"bridgeLastHttp\":" + String(lastBridgeHttpCode) + ",";
+  json += "\"bridgeLastSource\":\"" + jsonEscape(lastReceiverSource) + "\",";
+  json += "\"bridgeLastMsg\":\"" + jsonEscape(lastBridgeMsg) + "\"";
   json += "}";
 
   request->send(200, "application/json", json);
+}
+
+/** Handles POST /api/source by forwarding desired source to EnkelvoudReceiver. */
+void handleApiSourceBridge(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+  (void)index;
+  (void)total;
+
+  String source = "";
+  if (len > 0 && data) {
+    DynamicJsonDocument in(256);
+    DeserializationError err = deserializeJson(in, data, len);
+    if (!err && in["source"].is<const char*>()) {
+      source = String((const char*)in["source"]);
+    }
+  }
+
+  source.toUpperCase();
+  if (!(source == "BT" || source == "AUX" || source == "USB")) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid source\"}");
+    return;
+  }
+
+  String resp;
+  uint16_t code = 0;
+  bool ok = bridgeSetReceiverSource(source, resp, code);
+
+  lastReceiverSource = source;
+  lastBridgeHttpCode = code;
+  lastBridgeMsg = resp;
+
+  if (ok) {
+    request->send(200, "application/json", resp);
+  } else {
+    String out = String("{\"ok\":false,\"bridgeHttp\":") + String(code) + ",\"receiver\":" + resp + "}";
+    request->send(502, "application/json", out);
+  }
+}
+
+/** Handles POST /api/cmd by forwarding command to EnkelvoudReceiver. */
+void handleApiCmdBridge(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+  (void)index;
+  (void)total;
+
+  String cmd = "";
+  if (len > 0 && data) {
+    DynamicJsonDocument in(256);
+    DeserializationError err = deserializeJson(in, data, len);
+    if (!err && in["cmd"].is<const char*>()) {
+      cmd = String((const char*)in["cmd"]);
+    }
+  }
+
+  cmd.toLowerCase();
+  if (!(cmd == "next" || cmd == "prev" || cmd == "bt" || cmd == "aux" || cmd == "usb")) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid cmd\"}");
+    return;
+  }
+
+  String resp;
+  uint16_t code = 0;
+  bool ok = bridgeSendReceiverCmd(cmd, resp, code);
+
+  lastBridgeHttpCode = code;
+  lastBridgeMsg = resp;
+
+  if (ok) {
+    request->send(200, "application/json", resp);
+  } else {
+    String out = String("{\"ok\":false,\"bridgeHttp\":") + String(code) + ",\"receiver\":" + resp + "}";
+    request->send(502, "application/json", out);
+  }
 }
 
 // ============================================================================
@@ -461,6 +628,16 @@ void setup_websocket_server() {
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
     handleApiStatus(request);
   });
+
+  server.on("/api/source", HTTP_POST,
+            [](AsyncWebServerRequest *request) {},
+            nullptr,
+            handleApiSourceBridge);
+
+  server.on("/api/cmd", HTTP_POST,
+            [](AsyncWebServerRequest *request) {},
+            nullptr,
+            handleApiCmdBridge);
 
   server.onNotFound([](AsyncWebServerRequest *request) {
     request->send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
@@ -575,6 +752,7 @@ void loop() {
     LOGI("WS clients         : %d", wsClientCount);
     LOGI("WS packets sent    : %u  | bytes: %u (%.1f kbps)", statWsPacketsSent, statWsBytesSent, kbps);
     LOGI("Avg latency (capture->send): %.1f ms", avgLatency);
+    LOGI("Bridge -> host:%s code:%u src:%s", RECEIVER_HOST, lastBridgeHttpCode, lastReceiverSource.c_str());
     LOGI("Free heap          : %u bytes", ESP.getFreeHeap());
     LOGI("---------------------------------------------------------");
 
