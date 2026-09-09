@@ -1,65 +1,9 @@
 #pragma once
 
-/*
-  EVDPLR.h
-  --------
-  Player page served at:
-    - /player
-  This page is HTTP-served and can be used as a companion control/status page
-  for the receiver node. (Actual Opus playback is typically performed against
-  the ESP32-S3 websocket endpoint in your EnkelvoudPlayer flow.)
-*/
-
 static const char EVDPLR_HTML[] PROGMEM = R"HTML(
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Enkelvoud Player</title>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0c1118;color:#eaf0ff;margin:0;padding:20px}
-    .card{max-width:760px;margin:0 auto;background:#131b28;border:1px solid #26354e;border-radius:14px;padding:18px}
-    h1{margin:0 0 6px;font-size:1.3rem}
-    .muted{color:#a8badc}
-    .box{margin-top:12px;padding:12px;border:1px solid #2b3d5a;border-radius:10px;background:#0d1421}
-    .pill{display:inline-block;padding:5px 10px;border-radius:999px;background:#1b2a40;border:1px solid #39547c}
-    a{color:#9ec1ff}
-    code{background:#0b1220;padding:2px 6px;border-radius:6px}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>EVDPLR</h1>
-    <div class="muted">Receiver-side player/status page</div>
-
-    <div class="box">
-      <p>Selected Source: <span id="src" class="pill">...</span></p>
-      <p>Receiver IP: <span id="ip">...</span></p>
-      <p>Open Control: <a href="/">/</a></p>
-      <p>Expected S3 websocket endpoint (on your server node): <code>ws://&lt;s3-ip&gt;/audio</code></p>
-    </div>
-
-    <div class="box">
-      <pre id="status">{}</pre>
-    </div>
-  </div>
-
-<script>
-async function poll(){
-  try{
-    const r = await fetch('/api/status');
-    const j = await r.json();
-    document.getElementById('src').textContent = j.source || '?';
-    document.getElementById('ip').textContent = j.ip || '?';
-    document.getElementById('status').textContent = JSON.stringify(j,null,2);
-  }catch(e){
-    document.getElementById('status').textContent = 'error: ' + e;
-  }
-}
-poll();
-setInterval(poll, 3000);
-</script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enkelvoud Player</title><style>
+:root{--bg:#050507;--panel:#14141a;--line:#33333e;--text:#f7f7fa;--muted:#aaaab6;--accent:#a982ff;--good:#37dba0;--bad:#ff7188}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at top right,#291b50,transparent 34rem),var(--bg);color:var(--text);font:15px system-ui,sans-serif}.card{width:min(94%,540px);padding:24px;border:1px solid var(--line);border-radius:20px;background:linear-gradient(145deg,#1b1b23,var(--panel));box-shadow:0 22px 60px #0008}h1{margin:0;font-size:2rem;letter-spacing:-.05em}.muted{color:var(--muted)}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:25px 0}.btn{font:inherit;font-weight:800;padding:14px;border-radius:13px;color:var(--text);background:#09090c;border:1px solid var(--line);cursor:pointer}.btn.play{background:var(--accent);border-color:var(--accent);color:#190d31}.btn.active{background:#553889;border-color:var(--accent)}.range{appearance:none;width:100%;height:7px;border:0;border-radius:99px;padding:0;background:linear-gradient(90deg,var(--accent) var(--p,100%),#3b3b46 var(--p,100%))}.range::-webkit-slider-thumb{appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:3px solid var(--accent)}.box{margin-top:20px;padding-top:15px;border-top:1px solid var(--line)}.stat{display:flex;justify-content:space-between;gap:16px;padding:8px 0}.stat b{word-break:break-all;text-align:right}.log{min-height:86px;max-height:160px;overflow:auto;margin:0;padding:10px;border:1px solid var(--line);border-radius:10px;background:#09090c;color:var(--muted);font:12px ui-monospace,monospace;white-space:pre-wrap}.good{color:var(--good)}.bad{color:var(--bad)}
+</style></head><body><main class="card"><h1 id="title">Enkelvoud Player</h1><p class="muted">HTTP Ogg/Opus test player</p><div class="controls"><button class="btn play" id="play">Play test stream</button><button class="btn" id="mute">Mute</button></div><div><div class="stat"><span>Player volume</span><b id="volume-value">100%</b></div><input class="range" id="volume" type="range" min="0" max="100" value="100"></div><audio id="audio" preload="none"></audio><div class="box" id="status"></div><div class="box"><div class="stat"><span>HTTP Ogg stream</span><b id="stream-state">Ready</b></div><pre class="log" id="stream-log">Press Play test stream to request /stream.ogg.</pre></div><p class="muted">This test plays a three-second rolling capture from the Server's single Opus encoder.</p><p class="muted"><a href="/" style="color:var(--accent)">Back to server control</a></p></main><script>
+const $=x=>document.getElementById(x),audio=$('audio');let muted=false;function setRange(){let v=$('volume').value;$('volume').style.setProperty('--p',v+'%');$('volume-value').textContent=v+'%';audio.volume=v/100}function log(text){$('stream-log').textContent=new Date().toLocaleTimeString()+'  '+text+'\n'+$('stream-log').textContent.slice(0,1200)}function streamState(text,tone){$('stream-state').textContent=text;$('stream-state').className=tone||''}$('play').onclick=()=>{if(!audio.paused){audio.pause();return}streamState('Loading');log('Requesting HTTP Ogg test stream');audio.src='/stream.ogg?cache='+Date.now();audio.load();audio.play().catch(e=>{streamState('Unable to play','bad');log('Playback failed: '+e.message)})};audio.onplay=()=>{$('play').textContent='Pause';$('play').classList.add('active');streamState('Playing','good');log('Ogg/Opus playback started')};audio.onpause=()=>{$('play').textContent='Play test stream';$('play').classList.remove('active')};audio.onended=()=>{streamState('Capture ended');log('Test capture finished')};audio.onerror=()=>{streamState('Stream error','bad');log('HTTP Ogg stream could not be decoded or played')};$('mute').onclick=()=>{muted=!muted;audio.muted=muted;$('mute').textContent=muted?'Unmute':'Mute';$('mute').classList.toggle('active',muted)};$('volume').oninput=setRange;async function poll(){try{await fetch('/api/player/register',{method:'POST'});let j=await (await fetch('/api/status')).json();$('title').textContent=(j.serverName||'Enkelvoud')+' Player';$('status').innerHTML=[['Server',j.serverName],['Address',j.ip],['Source',j.bridgeLastSource||'Bluetooth'],['S3 input',j.streaming?.i2sBytesLast5s>0?'Receiving':'No audio'],['Connected players',(j.players||[]).length]].map(x=>`<div class="stat"><span>${x[0]}</span><b>${x[1]??'--'}</b></div>`).join('')}catch(e){$('status').textContent='Unable to read server status'}}setRange();poll();setInterval(poll,4000);
+</script></body></html>
 )HTML";

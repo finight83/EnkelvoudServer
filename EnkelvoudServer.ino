@@ -29,14 +29,18 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <Preferences.h>
+#include <vector>
 #include <driver/i2s.h>
 #include <ArduinoJson.h>
 #include "opus.h"
 
 #include "EVDCTRL.h"
 #include "EVDPLR.h"
+#include "EVDSRC.h"
 
 // ----------------------------------------------------------------------------
 // PIN CONFIG - I2S INPUT pins (from upstream ESP32 source board)
@@ -44,13 +48,47 @@
 int pinBtLrc  = 15;   // I2S Word Select / LRCLK (input)
 int pinBtDin  = 16;   // I2S Data IN (input)
 int pinBtBclk = 17;   // I2S Bit Clock (input)
+int pinSrcUartTx = 8; // Server TX -> receiver GPIO 21
+int pinSrcUartRx = 9; // Server RX <- receiver GPIO 4
 
 // ----------------------------------------------------------------------------
 // WIFI / SERVER CONFIG
 // ----------------------------------------------------------------------------
-const char *WIFI_STA_SSID      = "-";
-const char *WIFI_STA_PASSWORD  = "nopassword";
+
+const char *SETTINGS_VERSION = "v2.0.1";
+const char *DEFAULT_WIFI_STA_SSID = "Car_Modz_CC";
+const char *DEFAULT_WIFI_STA_PASSWORD = "Car@2006";
+const char *default_ap_ssid = "Enkelvoud-Server";
+const char *default_ap_password = "";
+
+IPAddress ap_local_ip(192, 168, 4, 1);
+IPAddress ap_gateway(192, 168, 4, 1);
+IPAddress ap_subnet(255, 255, 255, 0);
+
+String wifiStaSsid = DEFAULT_WIFI_STA_SSID;
+String wifiStaPassword = DEFAULT_WIFI_STA_PASSWORD;
+bool wifiUseStaticIp = false;
+String wifiStaticIp = "";
+String wifiStaticGateway = "";
+String wifiStaticSubnet = "255.255.255.0";
+String wifiStaticDns = "";
+String serverName = "Enkelvoud";
+bool masterMuted = false;
+uint8_t masterVolume = 100;
+uint16_t latencyAdjustmentMs = 0;
+uint16_t audioBufferMs = 0;
+String receiverSource = "BT";
+String receiverState = "unknown";
+uint32_t receiverSampleRate = 0;
+uint8_t receiverChannels = 0;
+uint8_t receiverBits = 0;
+uint32_t receiverBytes = 0;
+uint32_t receiverFrames = 0;
+uint32_t receiverErrors = 0;
+
+
 #define WIFI_CONNECT_TIMEOUT_MS 20000
+#define WIFI_TEST_TIMEOUT_MS 15000
 
 // ----------------------------------------------------------------------------
 // RECEIVER CONTROL BRIDGE CONFIG (S3 -> EnkelvoudReceiver)
@@ -68,6 +106,8 @@ const char *RECEIVER_TOKEN = ""; // set if receiver CONTROL_TOKEN is enabled
 #define OPUS_FRAME_SAMPLES    960
 #define OPUS_BITRATE          64000
 #define OPUS_MAX_PACKET_BYTES 1500
+#define OGG_TEST_PACKET_COUNT 150
+#define OGG_TEST_MAX_PACKET_BYTES 256
 
 #define I2S_PORT              I2S_NUM_0
 #define I2S_READ_CHUNK_BYTES  1024
@@ -86,6 +126,7 @@ const char *RECEIVER_TOKEN = ""; // set if receiver CONTROL_TOKEN is enabled
 AsyncWebServer server(80);
 AsyncWebSocket ws("/audio");
 OpusEncoder *opusEncoder = nullptr;
+Preferences preferences;
 
 // ----------------------------------------------------------------------------
 // QUEUED DATA STRUCTURES
@@ -108,6 +149,16 @@ struct OpusPacket {
 static QueueHandle_t opusQueue = nullptr;
 #define OPUS_QUEUE_LEN 64
 
+/** Compact Ogg history. CBR Opus at 64 kbps uses 160 bytes per 20 ms packet. */
+struct OggTestPacket {
+  uint8_t data[OGG_TEST_MAX_PACKET_BYTES];
+  uint16_t len;
+};
+static OggTestPacket oggTestPackets[OGG_TEST_PACKET_COUNT];
+static uint8_t oggTestWriteIndex = 0;
+static uint8_t oggTestPacketCount = 0;
+static portMUX_TYPE oggTestMux = portMUX_INITIALIZER_UNLOCKED;
+
 // ----------------------------------------------------------------------------
 // STATS
 // ----------------------------------------------------------------------------
@@ -118,14 +169,303 @@ static volatile uint32_t statOpusEncoded    = 0;
 static volatile uint32_t statOpusDropped    = 0;
 static volatile uint32_t statWsPacketsSent  = 0;
 static volatile uint32_t statWsBytesSent    = 0;
+static volatile uint32_t statI2sBytesLast5s = 0;
+static volatile uint32_t statRawDroppedLast5s = 0;
+static volatile uint32_t statOpusEncodedLast5s = 0;
+static volatile uint32_t statOpusDroppedLast5s = 0;
+static volatile uint32_t statWsPacketsLast5s = 0;
+static volatile uint32_t statWsBytesLast5s = 0;
+static volatile uint64_t statI2sBytesTotal = 0;
 static volatile uint64_t statLatencySumMs   = 0;
 static volatile uint32_t statLatencyCount   = 0;
 static volatile int      wsClientCount      = 0;
 
 // Bridge telemetry.
-static String lastReceiverSource = "unknown";
+static String lastReceiverSource = "BT";
 static uint16_t lastBridgeHttpCode = 0;
 static String lastBridgeMsg = "";
+static bool accessPointActive = false;
+enum NetworkTestState { NETWORK_TEST_IDLE, NETWORK_TEST_RUNNING, NETWORK_TEST_SUCCESS, NETWORK_TEST_FAILED };
+static volatile NetworkTestState networkTestState = NETWORK_TEST_IDLE;
+static String networkTestIp = "";
+static String networkTestError = "";
+static String pendingSsid = "";
+static String pendingServerName = "";
+static String pendingPassword = "";
+static bool pendingUseStaticIp = false;
+static String pendingStaticIp = "";
+static String pendingStaticGateway = "";
+static String pendingStaticSubnet = "";
+static String pendingStaticDns = "";
+
+struct PlayerNode {
+  String name;
+  String ip;
+  unsigned long lastSeenMs;
+};
+static std::vector<PlayerNode> playerNodes;
+
+String sanitizeServerName(const String &value) {
+  String result;
+  result.reserve(value.length());
+  for (size_t i = 0; i < value.length(); ++i) {
+    if (isAlphaNumeric(value[i])) result += value[i];
+  }
+  return result.length() ? result : "Enkelvoud";
+}
+
+String htmlEscape(const String &value) {
+  String escaped;
+  escaped.reserve(value.length());
+  for (size_t i = 0; i < value.length(); ++i) {
+    switch (value[i]) {
+      case '&': escaped += F("&amp;"); break;
+      case '"': escaped += F("&quot;"); break;
+      case '<': escaped += F("&lt;"); break;
+      case '>': escaped += F("&gt;"); break;
+      default: escaped += value[i]; break;
+    }
+  }
+  return escaped;
+}
+
+IPAddress activeIpAddress() {
+  return WiFi.status() == WL_CONNECTED ? WiFi.localIP()
+      : (accessPointActive ? WiFi.softAPIP() : IPAddress(0, 0, 0, 0));
+}
+
+void loadWiFiSettings() {
+  preferences.begin("enkelvoud", false);
+  String storedVersion = preferences.getString("s_ver", "");
+  if (storedVersion != SETTINGS_VERSION) {
+    preferences.clear();
+    preferences.putString("s_ver", SETTINGS_VERSION);
+    LOGI("Settings version changed; restored default settings");
+  }
+  wifiStaSsid = preferences.getString("wifi_ssid", DEFAULT_WIFI_STA_SSID);
+  wifiStaPassword = preferences.getString("wifi_pass", DEFAULT_WIFI_STA_PASSWORD);
+  wifiUseStaticIp = preferences.getBool("wifi_static", false);
+  wifiStaticIp = preferences.getString("wifi_ip", "");
+  wifiStaticGateway = preferences.getString("wifi_gateway", "");
+  wifiStaticSubnet = preferences.getString("wifi_subnet", "255.255.255.0");
+  wifiStaticDns = preferences.getString("wifi_dns", "");
+  serverName = sanitizeServerName(preferences.getString("server_name", "Enkelvoud"));
+  masterMuted = preferences.getBool("master_muted", false);
+  masterVolume = preferences.getUChar("master_volume", 100);
+  latencyAdjustmentMs = preferences.getUShort("latency_ms", 0);
+  audioBufferMs = preferences.getUShort("buffer_ms", 0);
+  preferences.end();
+}
+
+String networkSettingsPage() {
+  String page = F(
+      "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Enkelvoud Network Setup</title><style>"
+      "body{font:15px system-ui,sans-serif;margin:0;padding:24px;color:#f6f6f8;background:radial-gradient(circle at top right,#2a1b52,transparent 28rem),#050507}"
+      "form{max-width:34rem;margin:5vh auto;padding:26px;border:1px solid #30303a;border-radius:20px;background:linear-gradient(145deg,#1a1a21,#101014);box-shadow:0 24px 60px #0008}"
+      "h1,p{max-width:34rem;margin:0 auto}h1{font-size:2rem;letter-spacing:-.05em}p{margin-top:10px;color:#a1a1ad;line-height:1.5}"
+      "label,input,button{display:block;width:100%;box-sizing:border-box}label{margin-top:1rem;font-weight:700}input,button{padding:.8rem;font-size:1rem;border-radius:11px}"
+      "input{margin-top:7px;color:#f6f6f8;background:#09090c;border:1px solid #343440}button{margin-top:1.5rem;border:0;background:#9d7bff;color:#140b2c;font-weight:800;cursor:pointer}"
+      "small{color:#a1a1ad}.checkbox{display:flex;gap:.6rem;align-items:center}.checkbox input{width:auto}.hidden{display:none}"
+      "</style></head><body><h1>Enkelvoud Network Setup</h1>"
+      "<p>Connect the server to your Wi-Fi network. The access point is available at 192.168.4.1 while setup is required.</p>"
+      "<form id='network-settings'><label for='server-name'>Server name</label><input id='server-name' name='server_name' pattern='[A-Za-z0-9]+' required value='");
+  page += htmlEscape(serverName);
+  page += F("'><small>Letters and numbers only; this becomes the <strong>.local</strong> address.</small>"
+      "<label for='ssid'>Wi-Fi SSID</label><input id='ssid' name='ssid' required value='");
+  page += htmlEscape(wifiStaSsid);
+  page += F("'><label for='password'>Wi-Fi password</label><input id='password' name='password' type='password' value='");
+  page += htmlEscape(wifiStaPassword);
+  page += F("'><label class='checkbox'><input id='static-ip' name='use_static_ip' type='checkbox' onchange='document.getElementById(\"static-settings\").className=this.checked?\"\":\"hidden\"'");
+  if (wifiUseStaticIp) page += F(" checked");
+  page += F("> Use a static IP for this Wi-Fi network</label><div id='static-settings' class='");
+  page += wifiUseStaticIp ? "" : "hidden";
+  page += F("'><label for='ip'>IP address</label><input id='ip' name='ip' value='");
+  page += htmlEscape(wifiStaticIp);
+  page += F("'><label for='gateway'>Gateway</label><input id='gateway' name='gateway' value='");
+  page += htmlEscape(wifiStaticGateway);
+  page += F("'><label for='subnet'>Subnet mask</label><input id='subnet' name='subnet' value='");
+  page += htmlEscape(wifiStaticSubnet);
+  page += F("'><label for='dns'>DNS server</label><input id='dns' name='dns' value='");
+  page += htmlEscape(wifiStaticDns);
+  page += F("'></div>");
+  page += F("<button id='save-button' type='submit'>Save</button></form>"
+      "<script>const form=document.getElementById('network-settings'),button=document.getElementById('save-button');"
+      "function suggest(){const p=document.getElementById('ip').value.trim().split('.');if(p.length!==4||p.some(v=>!/^\\d+$/.test(v)||+v>255))return;"
+      "const base=p.slice(0,3).join('.')+'.1';document.getElementById('gateway').value=base;"
+      "document.getElementById('dns').value=base;document.getElementById('subnet').value='255.255.255.0';}"
+      "document.getElementById('ip').addEventListener('input',suggest);"
+      "form.addEventListener('submit',async e=>{e.preventDefault();button.disabled=true;button.textContent='Testing connection...';"
+      "try{const r=await fetch('/save',{method:'POST',body:new URLSearchParams(new FormData(form))}),d=await r.json();"
+      "if(!r.ok||!d.ok)throw new Error(d.error||'Unable to connect');let s;do{await new Promise(done=>setTimeout(done,500));s=await (await fetch('/api/network-test')).json();}"
+      "while(s.state==='running');if(s.state!=='success')throw new Error(s.error||'Unable to connect');"
+      "alert('Success\\n\\nConnected to '+s.ip+'. Settings were saved and the server is restarting.');const host=document.getElementById('server-name').value+'.local';await fetch('/api/restart',{method:'POST'});setTimeout(()=>location.href='http://'+host+'/',1200);}"
+      "catch(error){alert('Unable to connect\\n\\n'+error.message+'\\n\\nCheck the SSID, password, and static IP settings, then try again.');button.disabled=false;button.textContent='Test, save and restart';}});"
+      "</script></body></html>");
+  return page;
+}
+
+void handleNetworkSettings(AsyncWebServerRequest *request) {
+  request->send(200, "text/html; charset=utf-8", networkSettingsPage());
+}
+
+void saveTestedNetworkSettings() {
+  serverName = pendingServerName;
+  wifiStaSsid = pendingSsid;
+  wifiStaPassword = pendingPassword;
+  wifiUseStaticIp = pendingUseStaticIp;
+  wifiStaticIp = pendingStaticIp;
+  wifiStaticGateway = pendingStaticGateway;
+  wifiStaticSubnet = pendingStaticSubnet;
+  wifiStaticDns = pendingStaticDns;
+
+  preferences.begin("enkelvoud", false);
+  preferences.putString("s_ver", SETTINGS_VERSION);
+  preferences.putString("wifi_ssid", wifiStaSsid);
+  preferences.putString("wifi_pass", wifiStaPassword);
+  preferences.putBool("wifi_static", wifiUseStaticIp);
+  preferences.putString("wifi_ip", wifiStaticIp);
+  preferences.putString("wifi_gateway", wifiStaticGateway);
+  preferences.putString("wifi_subnet", wifiStaticSubnet);
+  preferences.putString("wifi_dns", wifiStaticDns);
+  preferences.putString("server_name", serverName);
+  preferences.end();
+  LOGI("Network settings saved to NVS (SSID: \"%s\", static IP: %s)",
+       wifiStaSsid.c_str(), wifiUseStaticIp ? "enabled" : "disabled");
+}
+
+void networkTestTask(void *parameter) {
+  (void)parameter;
+  IPAddress ip, gateway, subnet, dns;
+
+  WiFi.disconnect(false, false);
+  WiFi.mode(accessPointActive ? WIFI_AP_STA : WIFI_STA);
+  if (!pendingUseStaticIp) {
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+  } else if (!ip.fromString(pendingStaticIp) || !gateway.fromString(pendingStaticGateway) ||
+             !subnet.fromString(pendingStaticSubnet) || !dns.fromString(pendingStaticDns) ||
+             !WiFi.config(ip, gateway, subnet, dns)) {
+    networkTestError = "Unable to apply the static IP configuration";
+    networkTestState = NETWORK_TEST_FAILED;
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  WiFi.begin(pendingSsid.c_str(), pendingPassword.c_str());
+  unsigned long startMs = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startMs < WIFI_TEST_TIMEOUT_MS) {
+    vTaskDelay(pdMS_TO_TICKS(250));
+  }
+
+  if (WiFi.status() != WL_CONNECTED || (pendingUseStaticIp && WiFi.localIP() != ip)) {
+    WiFi.disconnect(false, false);
+    if (accessPointActive) WiFi.mode(WIFI_AP);
+    networkTestError = "Unable to connect using the supplied Wi-Fi and IP settings";
+    networkTestState = NETWORK_TEST_FAILED;
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  networkTestIp = WiFi.localIP().toString();
+  saveTestedNetworkSettings();
+  networkTestState = NETWORK_TEST_SUCCESS;
+  vTaskDelete(nullptr);
+}
+
+bool validStaticStationAddress(const IPAddress &ip, const IPAddress &gateway, const IPAddress &subnet) {
+  uint32_t address = ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) |
+      ((uint32_t)ip[2] << 8) | ip[3];
+  uint32_t router = ((uint32_t)gateway[0] << 24) | ((uint32_t)gateway[1] << 16) |
+      ((uint32_t)gateway[2] << 8) | gateway[3];
+  uint32_t mask = ((uint32_t)subnet[0] << 24) | ((uint32_t)subnet[1] << 16) |
+      ((uint32_t)subnet[2] << 8) | subnet[3];
+  uint32_t hostMask = ~mask;
+
+  return address != router && address != 0 && address != 0xFFFFFFFF &&
+      address != 0xC0A80401 && (address & mask) == (router & mask) &&
+      (address & hostMask) != 0 && (address & hostMask) != hostMask;
+}
+
+void handleSaveNetworkSettings(AsyncWebServerRequest *request) {
+  if (!request->hasParam("ssid", true)) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"Wi-Fi SSID is required\"}");
+    return;
+  }
+
+  String newServerName = request->hasParam("server_name", true)
+      ? sanitizeServerName(request->getParam("server_name", true)->value())
+      : "Enkelvoud";
+  String newSsid = request->getParam("ssid", true)->value();
+  String newPassword = request->hasParam("password", true)
+      ? request->getParam("password", true)->value()
+      : "";
+  bool newUseStaticIp = request->hasParam("use_static_ip", true);
+  String newStaticIp = request->hasParam("ip", true) ? request->getParam("ip", true)->value() : "";
+  String newStaticGateway = request->hasParam("gateway", true) ? request->getParam("gateway", true)->value() : "";
+  String newStaticSubnet = request->hasParam("subnet", true) ? request->getParam("subnet", true)->value() : "255.255.255.0";
+  String newStaticDns = request->hasParam("dns", true) ? request->getParam("dns", true)->value() : "";
+
+  IPAddress ip, gateway, subnet, dns;
+  if (newSsid.length() == 0) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"Wi-Fi SSID is required\"}");
+    return;
+  }
+
+  if (newUseStaticIp && (!ip.fromString(newStaticIp) || !gateway.fromString(newStaticGateway) ||
+      !subnet.fromString(newStaticSubnet) || !dns.fromString(newStaticDns) ||
+      !validStaticStationAddress(ip, gateway, subnet))) {
+      request->send(400, "application/json",
+                    "{\"ok\":false,\"error\":\"Use a valid unused host IP on the gateway network\"}");
+      return;
+  }
+
+  if (networkTestState == NETWORK_TEST_RUNNING) {
+    request->send(409, "application/json",
+                  "{\"ok\":false,\"error\":\"A Wi-Fi connection test is already running\"}");
+    return;
+  }
+
+  pendingSsid = newSsid;
+  pendingPassword = newPassword;
+  pendingUseStaticIp = newUseStaticIp;
+  pendingStaticIp = newStaticIp;
+  pendingStaticGateway = newStaticGateway;
+  pendingStaticSubnet = newStaticSubnet;
+  pendingStaticDns = newStaticDns;
+  pendingServerName = newServerName;
+  networkTestIp = "";
+  networkTestError = "";
+  networkTestState = NETWORK_TEST_RUNNING;
+  if (xTaskCreate(networkTestTask, "wifiTest", 4096, nullptr, 1, nullptr) != pdPASS) {
+    networkTestError = "Unable to start the Wi-Fi connection test";
+    networkTestState = NETWORK_TEST_FAILED;
+    request->send(500, "application/json", "{\"ok\":false,\"error\":\"Unable to start the Wi-Fi connection test\"}");
+    return;
+  }
+  request->send(202, "application/json", "{\"ok\":true,\"state\":\"running\"}");
+}
+
+void handleNetworkTestStatus(AsyncWebServerRequest *request) {
+  const char *state = "idle";
+  if (networkTestState == NETWORK_TEST_RUNNING) state = "running";
+  else if (networkTestState == NETWORK_TEST_SUCCESS) state = "success";
+  else if (networkTestState == NETWORK_TEST_FAILED) state = "failed";
+
+  String json = String("{\"state\":\"") + state + "\"";
+  if (networkTestState == NETWORK_TEST_SUCCESS) {
+    json += ",\"ip\":\"" + networkTestIp + "\"";
+  } else if (networkTestState == NETWORK_TEST_FAILED) {
+    json += ",\"error\":\"" + networkTestError + "\"";
+  }
+  json += "}";
+  request->send(200, "application/json", json);
+}
+
+void handleRestart(AsyncWebServerRequest *request) {
+  request->send(200, "application/json", "{\"ok\":true}");
+  delay(200);
+  ESP.restart();
+}
 
 // ============================================================================
 // RESAMPLER 44.1k -> 48k
@@ -215,34 +555,98 @@ String jsonEscape(const String &s) {
   return out;
 }
 
-/** Sends POST /api/source to EnkelvoudReceiver and returns true on HTTP 200. */
+uint32_t oggCrc(const uint8_t *data, size_t length) {
+    uint32_t crc = 0;
+    for (size_t i = 0; i < length; ++i) {
+      crc ^= (uint32_t)data[i] << 24;
+      for (uint8_t bit = 0; bit < 8; ++bit) {
+        crc = (crc & 0x80000000) ? (crc << 1) ^ 0x04C11DB7 : crc << 1;
+      }
+    }
+    return crc;
+  }
+
+void writeOggPage(AsyncResponseStream *response, const uint8_t *packet, size_t packetLength,
+                    uint32_t serial, uint32_t sequence, uint64_t granulePosition, uint8_t headerType) {
+    // Ogg requires a zero-sized terminating segment when a packet is an exact
+    // multiple of 255 bytes.
+    const size_t segmentCount = (packetLength / 255) + 1;
+    uint8_t page[27 + (OPUS_MAX_PACKET_BYTES / 255) + 2 + OPUS_MAX_PACKET_BYTES];
+    memcpy(page, "OggS", 4);
+    page[4] = 0;
+    page[5] = headerType;
+    for (uint8_t i = 0; i < 8; ++i) page[6 + i] = (granulePosition >> (i * 8)) & 0xFF;
+    for (uint8_t i = 0; i < 4; ++i) page[14 + i] = (serial >> (i * 8)) & 0xFF;
+    for (uint8_t i = 0; i < 4; ++i) page[18 + i] = (sequence >> (i * 8)) & 0xFF;
+    memset(page + 22, 0, 4);
+    page[26] = segmentCount;
+    size_t remaining = packetLength;
+    for (size_t i = 0; i < segmentCount; ++i) {
+      page[27 + i] = remaining >= 255 ? 255 : remaining;
+      remaining -= page[27 + i];
+    }
+    memcpy(page + 27 + segmentCount, packet, packetLength);
+    size_t pageLength = 27 + segmentCount + packetLength;
+    uint32_t crc = oggCrc(page, pageLength);
+    for (uint8_t i = 0; i < 4; ++i) page[22 + i] = (crc >> (i * 8)) & 0xFF;
+    response->write(page, pageLength);
+  }
+
+void storeOggTestPacket(const OpusPacket &packet) {
+    if (packet.len <= 0 || packet.len > OGG_TEST_MAX_PACKET_BYTES) {
+      LOGW("Ogg test packet skipped: %d bytes exceeds %d-byte history slot",
+           packet.len, OGG_TEST_MAX_PACKET_BYTES);
+      return;
+    }
+
+    portENTER_CRITICAL(&oggTestMux);
+    memcpy(oggTestPackets[oggTestWriteIndex].data, packet.data, packet.len);
+    oggTestPackets[oggTestWriteIndex].len = packet.len;
+    oggTestWriteIndex = (oggTestWriteIndex + 1) % OGG_TEST_PACKET_COUNT;
+    if (oggTestPacketCount < OGG_TEST_PACKET_COUNT) ++oggTestPacketCount;
+    portEXIT_CRITICAL(&oggTestMux);
+  }
+
+void handleOggTestStream(AsyncWebServerRequest *request) {
+    uint8_t count;
+    uint8_t start;
+    portENTER_CRITICAL(&oggTestMux);
+    count = oggTestPacketCount;
+    start = (oggTestWriteIndex + OGG_TEST_PACKET_COUNT - count) % OGG_TEST_PACKET_COUNT;
+    portEXIT_CRITICAL(&oggTestMux);
+
+    if (count == 0) {
+      request->send(503, "application/json", "{\"ok\":false,\"error\":\"No encoded audio is available yet\"}");
+      return;
+    }
+
+    AsyncResponseStream *response = request->beginResponseStream("audio/ogg");
+    response->addHeader("Cache-Control", "no-store");
+    const uint8_t opusHead[] = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0,
+                                0x80, 0xBB, 0, 0, 0, 0, 0};
+    const uint8_t opusTags[] = {'O', 'p', 'u', 's', 'T', 'a', 'g', 's', 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint32_t serial = 0x454E4B4C;
+    writeOggPage(response, opusHead, sizeof(opusHead), serial, 0, 0, 0x02);
+    writeOggPage(response, opusTags, sizeof(opusTags), serial, 1, 0, 0);
+    for (uint8_t i = 0; i < count; ++i) {
+      OggTestPacket packet;
+      portENTER_CRITICAL(&oggTestMux);
+      packet = oggTestPackets[(start + i) % OGG_TEST_PACKET_COUNT];
+      portEXIT_CRITICAL(&oggTestMux);
+      writeOggPage(response, packet.data, packet.len, serial, i + 2,
+                   (uint64_t)(i + 1) * OPUS_FRAME_SAMPLES, i + 1 == count ? 0x04 : 0);
+    }
+    request->send(response);
+}
+
+/** Sends source selection to the receiver over its dedicated UART control link. */
 bool bridgeSetReceiverSource(const String &source, String &respBody, uint16_t &httpCode) {
-  if (WiFi.status() != WL_CONNECTED) {
-    respBody = "{\"ok\":false,\"error\":\"wifi_disconnected\"}";
-    httpCode = 0;
-    return false;
-  }
-
-  HTTPClient http;
-  String url = String("http://") + RECEIVER_HOST + ":" + String(RECEIVER_PORT) + "/api/source";
-  if (!http.begin(url)) {
-    respBody = "{\"ok\":false,\"error\":\"http_begin_failed\"}";
-    httpCode = 0;
-    return false;
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  if (strlen(RECEIVER_TOKEN) > 0) {
-    http.addHeader("X-EVD-Token", RECEIVER_TOKEN);
-  }
-
-  String payload = String("{\"source\":\"") + source + "\"}";
-  int code = http.POST(payload);
-  httpCode = (uint16_t)((code < 0) ? 0 : code);
-  respBody = (code > 0) ? http.getString() : String("{\"ok\":false,\"error\":\"post_failed\"}");
-  http.end();
-
-  return code == 200;
+  sendReceiverSourceCommand(source);
+  receiverSource = source;
+  lastReceiverSource = source;
+  httpCode = 200;
+  respBody = String("{\"ok\":true,\"source\":\"") + source + "\",\"transport\":\"uart\"}";
+  return true;
 }
 
 /** Sends POST /api/cmd to EnkelvoudReceiver and returns true on HTTP 200. */
@@ -295,6 +699,7 @@ void i2sReadTask(void *param) {
     if (bytesRead == 0) continue;
 
     statI2sBytesIn += bytesRead;
+    statI2sBytesTotal += bytesRead;
 
     uint8_t *copy = (uint8_t *)malloc(bytesRead);
     if (!copy) {
@@ -347,6 +752,11 @@ void audioProcessingTask(void *param) {
       OpusPacket pkt;
       pkt.captured_ms = pendingOldestCapturedMs;
 
+      if (masterVolume < 100) {
+        for (uint32_t i = 0; i < OPUS_FRAME_SAMPLES * CHANNELS; ++i) {
+          pendingBuf[i] = (int16_t)((int32_t)pendingBuf[i] * masterVolume / 100);
+        }
+      }
       int nbytes = opus_encode(opusEncoder, pendingBuf, OPUS_FRAME_SAMPLES, pkt.data, OPUS_MAX_PACKET_BYTES);
       if (nbytes < 0) {
         LOGE("opus_encode() failed, error code %d", nbytes);
@@ -375,7 +785,8 @@ void wsSendTask(void *param) {
   for (;;) {
     if (xQueueReceive(opusQueue, &pkt, portMAX_DELAY) != pdTRUE) continue;
 
-    if (wsClientCount > 0) {
+    storeOggTestPacket(pkt);
+    if (wsClientCount > 0 && !masterMuted) {
       ws.binaryAll(pkt.data, pkt.len);
       statWsPacketsSent++;
       statWsBytesSent += pkt.len;
@@ -430,10 +841,23 @@ void handleApiStatus(AsyncWebServerRequest *request) {
 
   String json = "{";
   json += "\"ok\":true,";
-  json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
-  json += "\"wsUrl\":\"ws://" + WiFi.localIP().toString() + "/audio\",";
+  IPAddress ip = activeIpAddress();
+  json += "\"ip\":\"" + ip.toString() + "\",";
+  json += "\"wsUrl\":\"ws://" + ip.toString() + "/audio\",";
   json += "\"wifiConnected\":" + String((WiFi.status() == WL_CONNECTED) ? "true" : "false") + ",";
   json += "\"wifiRssi\":" + String(WiFi.RSSI()) + ",";
+  json += "\"wifiSsid\":\"" + jsonEscape(wifiStaSsid) + "\",";
+  json += "\"wifiPassword\":\"" + jsonEscape(wifiStaPassword) + "\",";
+  json += "\"wifiUseStaticIp\":" + String(wifiUseStaticIp ? "true" : "false") + ",";
+  json += "\"wifiStaticIp\":\"" + jsonEscape(wifiStaticIp) + "\",";
+  json += "\"wifiStaticGateway\":\"" + jsonEscape(wifiStaticGateway) + "\",";
+  json += "\"wifiStaticSubnet\":\"" + jsonEscape(wifiStaticSubnet) + "\",";
+  json += "\"wifiStaticDns\":\"" + jsonEscape(wifiStaticDns) + "\",";
+  json += "\"serverName\":\"" + jsonEscape(serverName) + "\",";
+  json += "\"masterMuted\":" + String(masterMuted ? "true" : "false") + ",";
+  json += "\"masterVolume\":" + String(masterVolume) + ",";
+  json += "\"latencyAdjustmentMs\":" + String(latencyAdjustmentMs) + ",";
+  json += "\"audioBufferMs\":" + String(audioBufferMs) + ",";
   json += "\"wsClients\":" + String(wsClientCount) + ",";
   json += "\"i2sBytesIn\":" + String(statI2sBytesIn) + ",";
   json += "\"i2sReadErrors\":" + String(statI2sReadErrors) + ",";
@@ -442,15 +866,51 @@ void handleApiStatus(AsyncWebServerRequest *request) {
   json += "\"opusDropped\":" + String(statOpusDropped) + ",";
   json += "\"wsPacketsSent\":" + String(statWsPacketsSent) + ",";
   json += "\"wsBytesSent\":" + String(statWsBytesSent) + ",";
+  json += "\"streaming\":{\"i2sBytesLast5s\":" + String(statI2sBytesLast5s) + ",";
+  json += "\"i2sBytesTotal\":" + String((uint32_t)statI2sBytesTotal) + ",";
+  json += "\"rawDroppedLast5s\":" + String(statRawDroppedLast5s) + ",";
+  json += "\"opusEncodedLast5s\":" + String(statOpusEncodedLast5s) + ",";
+  json += "\"opusDroppedLast5s\":" + String(statOpusDroppedLast5s) + ",";
+  json += "\"wsPacketsLast5s\":" + String(statWsPacketsLast5s) + ",";
+  json += "\"wsBytesLast5s\":" + String(statWsBytesLast5s) + "},";
   json += "\"avgLatencyMs\":" + String(avgLatency, 2) + ",";
   json += "\"receiverHost\":\"" + String(RECEIVER_HOST) + "\",";
   json += "\"receiverPort\":" + String(RECEIVER_PORT) + ",";
   json += "\"bridgeLastHttp\":" + String(lastBridgeHttpCode) + ",";
   json += "\"bridgeLastSource\":\"" + jsonEscape(lastReceiverSource) + "\",";
-  json += "\"bridgeLastMsg\":\"" + jsonEscape(lastBridgeMsg) + "\"";
+  json += "\"bridgeLastMsg\":\"" + jsonEscape(lastBridgeMsg) + "\",";
+  json += "\"receiverAudio\":{\"source\":\"" + jsonEscape(receiverSource) + "\",";
+  json += "\"state\":\"" + jsonEscape(receiverState) + "\",";
+  json += "\"rate\":" + String(receiverSampleRate) + ",";
+  json += "\"channels\":" + String(receiverChannels) + ",";
+  json += "\"bits\":" + String(receiverBits) + ",";
+  json += "\"bytes\":" + String(receiverBytes) + ",";
+  json += "\"frames\":" + String(receiverFrames) + ",";
+  json += "\"errors\":" + String(receiverErrors) + "},";
+  json += "\"players\":[";
+  for (size_t i = 0; i < playerNodes.size(); ++i) {
+    if (i) json += ",";
+    json += "{\"name\":\"" + jsonEscape(playerNodes[i].name) + "\",\"ip\":\"" +
+        jsonEscape(playerNodes[i].ip) + "\"}";
+  }
+  json += "]";
   json += "}";
 
   request->send(200, "application/json", json);
+}
+
+void handlePlayerRegistration(AsyncWebServerRequest *request) {
+  String ip = request->client()->remoteIP().toString();
+  for (auto &player : playerNodes) {
+    if (player.ip == ip) {
+      player.lastSeenMs = millis();
+      request->send(200, "application/json", "{\"ok\":true}");
+      return;
+    }
+  }
+  playerNodes.push_back({"Player", ip, millis()});
+  LOGI("Player registered from %s", ip.c_str());
+  request->send(200, "application/json", "{\"ok\":true}");
 }
 
 /** Handles POST /api/source by forwarding desired source to EnkelvoudReceiver. */
@@ -468,8 +928,8 @@ void handleApiSourceBridge(AsyncWebServerRequest *request, uint8_t *data, size_t
   }
 
   source.toUpperCase();
-  if (!(source == "BT" || source == "AUX" || source == "USB")) {
-    request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid source\"}");
+  if (source != "BT") {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"Only Bluetooth is enabled during testing\"}");
     return;
   }
 
@@ -524,6 +984,75 @@ void handleApiCmdBridge(AsyncWebServerRequest *request, uint8_t *data, size_t le
   }
 }
 
+void handleApiConfig(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+  (void)index;
+  if (len != total) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"Incomplete request body\"}");
+    return;
+  }
+
+  DynamicJsonDocument input(256);
+  if (deserializeJson(input, data, len)) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+    return;
+  }
+
+  bool changed = false;
+  if (input.containsKey("masterMuted") && input["masterMuted"].is<bool>()) {
+    masterMuted = input["masterMuted"];
+    changed = true;
+  }
+  if (input.containsKey("masterVolume") && input["masterVolume"].is<int>()) {
+    int value = input["masterVolume"];
+    if (value < 0 || value > 100) {
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"Volume must be between 0 and 100\"}");
+      return;
+    }
+    masterVolume = value;
+    changed = true;
+  }
+  if (input.containsKey("latencyAdjustmentMs") && input["latencyAdjustmentMs"].is<int>()) {
+    int value = input["latencyAdjustmentMs"];
+    if (value < 0 || value > 200) {
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"Latency must be between 0 and 200 ms\"}");
+      return;
+    }
+    latencyAdjustmentMs = value;
+    changed = true;
+  }
+  if (input.containsKey("audioBufferMs") && input["audioBufferMs"].is<int>()) {
+    int value = input["audioBufferMs"];
+    if (value < 0 || value > 200) {
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"Buffer must be between 0 and 200 ms\"}");
+      return;
+    }
+    audioBufferMs = value;
+    changed = true;
+  }
+  if (input.containsKey("serverName") && input["serverName"].is<const char*>()) {
+    String value = input["serverName"];
+    if (value.length() == 0 || value.length() > 32 || value != sanitizeServerName(value)) {
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"Server name must use 1-32 letters or numbers\"}");
+      return;
+    }
+    serverName = value;
+    changed = true;
+  }
+  if (!changed) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"No valid settings were supplied\"}");
+    return;
+  }
+
+  preferences.begin("enkelvoud", false);
+  preferences.putString("server_name", serverName);
+  preferences.putBool("master_muted", masterMuted);
+  preferences.putUChar("master_volume", masterVolume);
+  preferences.putUShort("latency_ms", latencyAdjustmentMs);
+  preferences.putUShort("buffer_ms", audioBufferMs);
+  preferences.end();
+  request->send(200, "application/json", "{\"ok\":true}");
+}
+
 // ============================================================================
 // SETUP HELPERS
 // ============================================================================
@@ -536,34 +1065,42 @@ void setup_serial() {
   LOGI("=========================================================");
 }
 
-/** Connects ESP32-S3 to WiFi in STA mode and enables reconnect on disconnect. */
+/** Connects to Wi-Fi through DHCP, or keeps a setup access point available. */
 void setup_wifi_sta() {
-  LOGI("Connecting to WiFi router \"%s\" with static IP...", WIFI_STA_SSID);
-
-  IPAddress local_IP(192, 168, 100, 250);
-  IPAddress gateway(192, 168, 100, 1);
-  IPAddress subnet(255, 255, 255, 0);
-  IPAddress primaryDNS(8, 8, 8, 8);
-  IPAddress secondaryDNS(8, 8, 4, 4);
-
-  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
-    LOGE("Failed to configure static IP!");
-  }
-
+  LOGI("Connecting to WiFi router \"%s\"...", wifiStaSsid.c_str());
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
+  if (wifiUseStaticIp) {
+    IPAddress ip, gateway, subnet, dns;
+    if (!ip.fromString(wifiStaticIp) || !gateway.fromString(wifiStaticGateway) ||
+        !subnet.fromString(wifiStaticSubnet) || !dns.fromString(wifiStaticDns) ||
+        !WiFi.config(ip, gateway, subnet, dns)) {
+      LOGE("Invalid or failed static IP configuration; using DHCP instead");
+      WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    }
+  }
+  WiFi.begin(wifiStaSsid.c_str(), wifiStaPassword.c_str());
 
   unsigned long startMs = millis();
-  while (WiFi.status() != WL_CONNECTED) {
-    if (millis() - startMs > WIFI_CONNECT_TIMEOUT_MS) {
-      LOGE("WiFi connect TIMED OUT after %lu ms (status=%d). Rebooting to retry...",
-           (unsigned long)WIFI_CONNECT_TIMEOUT_MS, (int)WiFi.status());
-      delay(1000);
-      ESP.restart();
-    }
+  while (WiFi.status() != WL_CONNECTED && millis() - startMs < WIFI_CONNECT_TIMEOUT_MS) {
     delay(250);
     LOGI("  ...still connecting (status=%d)", (int)WiFi.status());
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_AP);
+    if (!WiFi.softAPConfig(ap_local_ip, ap_gateway, ap_subnet)) {
+      LOGE("Failed to configure setup access point");
+    }
+    if (!WiFi.softAP(default_ap_ssid, default_ap_password)) {
+      LOGE("Failed to start setup access point");
+      return;
+    }
+    accessPointActive = true;
+    LOGW("WiFi connection failed; setup AP \"%s\" available at %s",
+         default_ap_ssid, WiFi.softAPIP().toString().c_str());
+    return;
   }
 
   IPAddress ip   = WiFi.localIP();
@@ -572,7 +1109,7 @@ void setup_wifi_sta() {
   IPAddress dns  = WiFi.dnsIP();
 
   LOGI("WiFi connected");
-  LOGI("  SSID          : %s", WIFI_STA_SSID);
+  LOGI("  SSID          : %s", wifiStaSsid.c_str());
   LOGI("  Channel       : %d", WiFi.channel());
   LOGI("  RSSI          : %d dBm", WiFi.RSSI());
   LOGI("  Device IP     : %s", ip.toString().c_str());
@@ -603,6 +1140,7 @@ void setup_opus() {
   }
 
   opus_encoder_ctl(opusEncoder, OPUS_SET_BITRATE(OPUS_BITRATE));
+  opus_encoder_ctl(opusEncoder, OPUS_SET_VBR(0));
   opus_encoder_ctl(opusEncoder, OPUS_SET_COMPLEXITY(5));
   opus_encoder_ctl(opusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
 
@@ -618,8 +1156,17 @@ void setup_websocket_server() {
   server.addHandler(&ws);
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (WiFi.status() != WL_CONNECTED) {
+      handleNetworkSettings(request);
+      return;
+    }
     request->send(200, "text/html; charset=utf-8", EVDCTRL_HTML);
   });
+
+  server.on("/settings", HTTP_GET, handleNetworkSettings);
+  server.on("/save", HTTP_POST, handleSaveNetworkSettings);
+  server.on("/api/network-test", HTTP_GET, handleNetworkTestStatus);
+  server.on("/api/restart", HTTP_POST, handleRestart);
 
   server.on("/player", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html; charset=utf-8", EVDPLR_HTML);
@@ -628,6 +1175,8 @@ void setup_websocket_server() {
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
     handleApiStatus(request);
   });
+  server.on("/stream.ogg", HTTP_GET, handleOggTestStream);
+  server.on("/api/player/register", HTTP_POST, handlePlayerRegistration);
 
   server.on("/api/source", HTTP_POST,
             [](AsyncWebServerRequest *request) {},
@@ -638,6 +1187,10 @@ void setup_websocket_server() {
             [](AsyncWebServerRequest *request) {},
             nullptr,
             handleApiCmdBridge);
+  server.on("/api/config", HTTP_POST,
+            [](AsyncWebServerRequest *request) {},
+            nullptr,
+            handleApiConfig);
 
   server.onNotFound([](AsyncWebServerRequest *request) {
     request->send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
@@ -712,9 +1265,20 @@ void setup_queues_and_tasks() {
 /** Arduino setup entrypoint initializing network, codec pipeline, and workers. */
 void setup() {
   setup_serial();
+  loadWiFiSettings();
   setup_wifi_sta();
+  if (WiFi.status() == WL_CONNECTED) {
+    if (MDNS.begin(serverName.c_str())) {
+      MDNS.addService("http", "tcp", 80);
+      LOGI("mDNS available at http://%s.local/", serverName.c_str());
+    } else {
+      LOGW("mDNS startup failed");
+    }
+  }
   setup_opus();
   setup_websocket_server();
+  setupReceiverLink();
+  sendReceiverSourceCommand(lastReceiverSource);
   setup_i2s_in();
   setup_queues_and_tasks();
 
@@ -739,12 +1303,14 @@ void loop() {
         : 0.0f;
     float kbps = (statWsBytesSent * 8.0f / 1000.0f) / 5.0f;
 
-    IPAddress devIp = WiFi.localIP();
     bool wifiUp = (WiFi.status() == WL_CONNECTED);
+    IPAddress devIp = activeIpAddress();
+    IPAddress devGateway = wifiUp ? WiFi.gatewayIP() : ap_gateway;
 
     LOGI("---- STATS (last 5s) ----------------------------------");
-    LOGI("WiFi status        : %s (RSSI: %d dBm)", wifiUp ? "CONNECTED" : "DISCONNECTED", WiFi.RSSI());
-    LOGI("Device IP addr     : %s  | Gateway: %s", devIp.toString().c_str(), WiFi.gatewayIP().toString().c_str());
+    LOGI("WiFi status        : %s (RSSI: %d dBm)",
+         wifiUp ? "CONNECTED" : (accessPointActive ? "AP MODE" : "DISCONNECTED"), WiFi.RSSI());
+    LOGI("Device IP addr     : %s  | Gateway: %s", devIp.toString().c_str(), devGateway.toString().c_str());
     LOGI("WebSocket URL      : ws://%s/audio", devIp.toString().c_str());
     LOGI("I2S bytes in       : %u  | read errors: %u", statI2sBytesIn, statI2sReadErrors);
     LOGI("Raw chunks dropped : %u", statRawDropped);
@@ -756,7 +1322,13 @@ void loop() {
     LOGI("Free heap          : %u bytes", ESP.getFreeHeap());
     LOGI("---------------------------------------------------------");
 
-    // Reset rolling 5-second counters.
+    // Snapshot rolling five-second counters for the control-panel streaming view.
+    statI2sBytesLast5s = statI2sBytesIn;
+    statRawDroppedLast5s = statRawDropped;
+    statOpusEncodedLast5s = statOpusEncoded;
+    statOpusDroppedLast5s = statOpusDropped;
+    statWsPacketsLast5s = statWsPacketsSent;
+    statWsBytesLast5s = statWsBytesSent;
     statI2sBytesIn = 0;
     statWsPacketsSent = 0;
     statWsBytesSent = 0;
@@ -765,5 +1337,6 @@ void loop() {
   }
 
   ws.cleanupClients();
+  handleReceiverLink();
   delay(10);
 }
