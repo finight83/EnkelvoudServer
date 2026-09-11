@@ -33,6 +33,7 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
+#include <algorithm>
 #include <vector>
 #include <driver/i2s.h>
 #include <ArduinoJson.h>
@@ -204,6 +205,16 @@ struct PlayerNode {
   unsigned long lastSeenMs;
 };
 static std::vector<PlayerNode> playerNodes;
+static const unsigned long PLAYER_STALE_TIMEOUT_MS = 15000;
+
+void pruneStalePlayers(unsigned long nowMs) {
+  playerNodes.erase(
+      std::remove_if(playerNodes.begin(), playerNodes.end(),
+                     [nowMs](const PlayerNode &player) {
+                       return (nowMs - player.lastSeenMs) > PLAYER_STALE_TIMEOUT_MS;
+                     }),
+      playerNodes.end());
+}
 
 String sanitizeServerName(const String &value) {
   String result;
@@ -787,6 +798,12 @@ void wsSendTask(void *param) {
 
     storeOggTestPacket(pkt);
     if (wsClientCount > 0 && !masterMuted) {
+      uint32_t targetDelayMs = (uint32_t)audioBufferMs + (uint32_t)latencyAdjustmentMs;
+      if (targetDelayMs > 0) {
+        int32_t remainingMs = (int32_t)((pkt.captured_ms + targetDelayMs) - millis());
+        if (remainingMs > 0) vTaskDelay(pdMS_TO_TICKS((uint32_t)remainingMs));
+      }
+
       ws.binaryAll(pkt.data, pkt.len);
       statWsPacketsSent++;
       statWsBytesSent += pkt.len;
@@ -835,6 +852,8 @@ void onWsEvent(AsyncWebSocket *serverPtr, AsyncWebSocketClient *client,
 
 /** Serves JSON status with pipeline, network, and bridge counters. */
 void handleApiStatus(AsyncWebServerRequest *request) {
+  pruneStalePlayers(millis());
+
   float avgLatency = statLatencyCount > 0
       ? (float)statLatencySumMs / (float)statLatencyCount
       : 0.0f;
@@ -900,6 +919,8 @@ void handleApiStatus(AsyncWebServerRequest *request) {
 }
 
 void handlePlayerRegistration(AsyncWebServerRequest *request) {
+  pruneStalePlayers(millis());
+
   String ip = request->client()->remoteIP().toString();
   for (auto &player : playerNodes) {
     if (player.ip == ip) {
@@ -1294,9 +1315,21 @@ unsigned long lastStatsMs = 0;
 
 /** Arduino loop for periodic stats and websocket housekeeping. */
 void loop() {
+  static uint32_t lastRawDroppedTotal = 0;
+  static uint32_t lastOpusEncodedTotal = 0;
+  static uint32_t lastOpusDroppedTotal = 0;
+
   unsigned long now = millis();
   if (now - lastStatsMs >= 5000) {
     lastStatsMs = now;
+    pruneStalePlayers(now);
+
+    uint32_t rawDroppedDelta = statRawDropped - lastRawDroppedTotal;
+    uint32_t opusEncodedDelta = statOpusEncoded - lastOpusEncodedTotal;
+    uint32_t opusDroppedDelta = statOpusDropped - lastOpusDroppedTotal;
+    lastRawDroppedTotal = statRawDropped;
+    lastOpusEncodedTotal = statOpusEncoded;
+    lastOpusDroppedTotal = statOpusDropped;
 
     float avgLatency = statLatencyCount > 0
         ? (float)statLatencySumMs / (float)statLatencyCount
@@ -1313,8 +1346,8 @@ void loop() {
     LOGI("Device IP addr     : %s  | Gateway: %s", devIp.toString().c_str(), devGateway.toString().c_str());
     LOGI("WebSocket URL      : ws://%s/audio", devIp.toString().c_str());
     LOGI("I2S bytes in       : %u  | read errors: %u", statI2sBytesIn, statI2sReadErrors);
-    LOGI("Raw chunks dropped : %u", statRawDropped);
-    LOGI("Opus frames encoded: %u  | dropped: %u", statOpusEncoded, statOpusDropped);
+    LOGI("Raw chunks dropped : %u", rawDroppedDelta);
+    LOGI("Opus frames encoded: %u  | dropped: %u", opusEncodedDelta, opusDroppedDelta);
     LOGI("WS clients         : %d", wsClientCount);
     LOGI("WS packets sent    : %u  | bytes: %u (%.1f kbps)", statWsPacketsSent, statWsBytesSent, kbps);
     LOGI("Avg latency (capture->send): %.1f ms", avgLatency);
@@ -1324,9 +1357,9 @@ void loop() {
 
     // Snapshot rolling five-second counters for the control-panel streaming view.
     statI2sBytesLast5s = statI2sBytesIn;
-    statRawDroppedLast5s = statRawDropped;
-    statOpusEncodedLast5s = statOpusEncoded;
-    statOpusDroppedLast5s = statOpusDropped;
+    statRawDroppedLast5s = rawDroppedDelta;
+    statOpusEncodedLast5s = opusEncodedDelta;
+    statOpusDroppedLast5s = opusDroppedDelta;
     statWsPacketsLast5s = statWsPacketsSent;
     statWsBytesLast5s = statWsBytesSent;
     statI2sBytesIn = 0;
