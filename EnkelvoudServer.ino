@@ -49,16 +49,23 @@
 int pinBtLrc  = 15;   // I2S Word Select / LRCLK (input)
 int pinBtDin  = 16;   // I2S Data IN (input)
 int pinBtBclk = 17;   // I2S Bit Clock (input)
-int pinSrcUartTx = 8; // Server TX -> receiver GPIO 21
-int pinSrcUartRx = 9; // Server RX <- receiver GPIO 4
+int pinSrcUartTx = 9; // Server TX -> receiver GPIO 32
+int pinSrcUartRx = 10; // Server RX <- receiver GPIO 33
+
+// ----------------------------------------------------------------------------
+// PIN CONFIG - I2S OUTPUT pins (to local DAC for local playback)
+// ----------------------------------------------------------------------------
+int pinDacLrc  = 11;   // I2S Word Select / LRCLK (output to DAC)
+int pinDacDout = 12;   // I2S Data OUT (output to DAC)
+int pinDacBclk = 13;   // I2S Bit Clock (output to DAC)
 
 // ----------------------------------------------------------------------------
 // WIFI / SERVER CONFIG
 // ----------------------------------------------------------------------------
 
-const char *SETTINGS_VERSION = "v2.0.1";
-const char *DEFAULT_WIFI_STA_SSID = "Car_Modz_CC";
-const char *DEFAULT_WIFI_STA_PASSWORD = "Car@2006";
+const char *SETTINGS_VERSION = "v2.0.4";
+const char *DEFAULT_WIFI_STA_SSID = "";
+const char *DEFAULT_WIFI_STA_PASSWORD = "";
 const char *default_ap_ssid = "Enkelvoud-Server";
 const char *default_ap_password = "";
 
@@ -92,6 +99,12 @@ uint32_t receiverErrors = 0;
 #define WIFI_TEST_TIMEOUT_MS 15000
 
 // ----------------------------------------------------------------------------
+// FACTORY RESET CONFIG (GPIO 0 pulled to GND)
+// ----------------------------------------------------------------------------
+#define PIN_FACTORY_RESET      0
+#define FACTORY_RESET_HOLD_MS  3000
+
+// ----------------------------------------------------------------------------
 // RECEIVER CONTROL BRIDGE CONFIG (S3 -> EnkelvoudReceiver)
 // ----------------------------------------------------------------------------
 const char *RECEIVER_HOST = "192.168.100.240";   // e.g. receiver IP or "enkelvoudserver.local"
@@ -110,7 +123,8 @@ const char *RECEIVER_TOKEN = ""; // set if receiver CONTROL_TOKEN is enabled
 #define OGG_TEST_PACKET_COUNT 150
 #define OGG_TEST_MAX_PACKET_BYTES 256
 
-#define I2S_PORT              I2S_NUM_0
+#define I2S_PORT_IN           I2S_NUM_0
+#define I2S_PORT_OUT          I2S_NUM_1
 #define I2S_READ_CHUNK_BYTES  1024
 
 // ----------------------------------------------------------------------------
@@ -266,6 +280,41 @@ void loadWiFiSettings() {
   latencyAdjustmentMs = preferences.getUShort("latency_ms", 0);
   audioBufferMs = preferences.getUShort("buffer_ms", 0);
   preferences.end();
+}
+
+/** Restores the default network settings in RAM and in NVS. */
+void resetNetworkSettingsToDefaults() {
+  wifiStaSsid = DEFAULT_WIFI_STA_SSID;
+  wifiStaPassword = DEFAULT_WIFI_STA_PASSWORD;
+  wifiUseStaticIp = false;
+  wifiStaticIp = "";
+  wifiStaticGateway = "";
+  wifiStaticSubnet = "255.255.255.0";
+  wifiStaticDns = "";
+  serverName = "Enkelvoud";
+
+  preferences.begin("enkelvoud", false);
+  preferences.putString("s_ver", SETTINGS_VERSION);
+  preferences.putString("wifi_ssid", wifiStaSsid);
+  preferences.putString("wifi_pass", wifiStaPassword);
+  preferences.putBool("wifi_static", wifiUseStaticIp);
+  preferences.putString("wifi_ip", wifiStaticIp);
+  preferences.putString("wifi_gateway", wifiStaticGateway);
+  preferences.putString("wifi_subnet", wifiStaticSubnet);
+  preferences.putString("wifi_dns", wifiStaticDns);
+  preferences.putString("server_name", serverName);
+  preferences.end();
+  LOGW("Factory reset: default IP settings restored");
+}
+
+/** Returns true while GPIO 0 stays connected to GND for the whole hold time. */
+bool factoryResetPinHeld(uint32_t holdMs) {
+  uint32_t startMs = millis();
+  while (millis() - startMs < holdMs) {
+    if (digitalRead(PIN_FACTORY_RESET) != LOW) return false;
+    delay(25);
+  }
+  return digitalRead(PIN_FACTORY_RESET) == LOW;
 }
 
 String networkSettingsPage() {
@@ -579,8 +628,6 @@ uint32_t oggCrc(const uint8_t *data, size_t length) {
 
 void writeOggPage(AsyncResponseStream *response, const uint8_t *packet, size_t packetLength,
                     uint32_t serial, uint32_t sequence, uint64_t granulePosition, uint8_t headerType) {
-    // Ogg requires a zero-sized terminating segment when a packet is an exact
-    // multiple of 255 bytes.
     const size_t segmentCount = (packetLength / 255) + 1;
     uint8_t page[27 + (OPUS_MAX_PACKET_BYTES / 255) + 2 + OPUS_MAX_PACKET_BYTES];
     memcpy(page, "OggS", 4);
@@ -660,34 +707,12 @@ bool bridgeSetReceiverSource(const String &source, String &respBody, uint16_t &h
   return true;
 }
 
-/** Sends POST /api/cmd to EnkelvoudReceiver and returns true on HTTP 200. */
+/** Sends a transport command to the receiver over its UART control link. */
 bool bridgeSendReceiverCmd(const String &cmd, String &respBody, uint16_t &httpCode) {
-  if (WiFi.status() != WL_CONNECTED) {
-    respBody = "{\"ok\":false,\"error\":\"wifi_disconnected\"}";
-    httpCode = 0;
-    return false;
-  }
-
-  HTTPClient http;
-  String url = String("http://") + RECEIVER_HOST + ":" + String(RECEIVER_PORT) + "/api/cmd";
-  if (!http.begin(url)) {
-    respBody = "{\"ok\":false,\"error\":\"http_begin_failed\"}";
-    httpCode = 0;
-    return false;
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  if (strlen(RECEIVER_TOKEN) > 0) {
-    http.addHeader("X-EVD-Token", RECEIVER_TOKEN);
-  }
-
-  String payload = String("{\"cmd\":\"") + cmd + "\"}";
-  int code = http.POST(payload);
-  httpCode = (uint16_t)((code < 0) ? 0 : code);
-  respBody = (code > 0) ? http.getString() : String("{\"ok\":false,\"error\":\"post_failed\"}");
-  http.end();
-
-  return code == 200;
+  sendReceiverCommand(cmd);
+  httpCode = 200;
+  respBody = String("{\"ok\":true,\"cmd\":\"") + cmd + "\",\"transport\":\"uart\"}";
+  return true;
 }
 
 // ============================================================================
@@ -700,7 +725,7 @@ void i2sReadTask(void *param) {
 
   for (;;) {
     size_t bytesRead = 0;
-    esp_err_t res = i2s_read(I2S_PORT, i2sBuf, sizeof(i2sBuf), &bytesRead, portMAX_DELAY);
+    esp_err_t res = i2s_read(I2S_PORT_IN, i2sBuf, sizeof(i2sBuf), &bytesRead, portMAX_DELAY);
 
     if (res != ESP_OK) {
       statI2sReadErrors++;
@@ -768,6 +793,13 @@ void audioProcessingTask(void *param) {
           pendingBuf[i] = (int16_t)((int32_t)pendingBuf[i] * masterVolume / 100);
         }
       }
+
+      // Send to local DAC (if not muted)
+      if (!masterMuted) {
+        size_t bytes_written;
+        i2s_write(I2S_PORT_OUT, pendingBuf, OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+      }
+
       int nbytes = opus_encode(opusEncoder, pendingBuf, OPUS_FRAME_SAMPLES, pkt.data, OPUS_MAX_PACKET_BYTES);
       if (nbytes < 0) {
         LOGE("opus_encode() failed, error code %d", nbytes);
@@ -1086,6 +1118,25 @@ void setup_serial() {
   LOGI("=========================================================");
 }
 
+/** Starts the setup access point on 192.168.4.1. */
+bool startSetupAccessPoint() {
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_AP);
+  WiFi.setSleep(false);
+  if (!WiFi.softAPConfig(ap_local_ip, ap_gateway, ap_subnet)) {
+    LOGE("Failed to configure setup access point");
+  }
+  if (!WiFi.softAP(default_ap_ssid, default_ap_password)) {
+    LOGE("Failed to start setup access point");
+    accessPointActive = false;
+    return false;
+  }
+  accessPointActive = true;
+  LOGI("Setup AP \"%s\" available at %s",
+       default_ap_ssid, WiFi.softAPIP().toString().c_str());
+  return true;
+}
+
 /** Connects to Wi-Fi through DHCP, or keeps a setup access point available. */
 void setup_wifi_sta() {
   LOGI("Connecting to WiFi router \"%s\"...", wifiStaSsid.c_str());
@@ -1109,18 +1160,8 @@ void setup_wifi_sta() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    WiFi.disconnect(false, false);
-    WiFi.mode(WIFI_AP);
-    if (!WiFi.softAPConfig(ap_local_ip, ap_gateway, ap_subnet)) {
-      LOGE("Failed to configure setup access point");
-    }
-    if (!WiFi.softAP(default_ap_ssid, default_ap_password)) {
-      LOGE("Failed to start setup access point");
-      return;
-    }
-    accessPointActive = true;
-    LOGW("WiFi connection failed; setup AP \"%s\" available at %s",
-         default_ap_ssid, WiFi.softAPIP().toString().c_str());
+    LOGW("WiFi connection failed; starting setup access point");
+    startSetupAccessPoint();
     return;
   }
 
@@ -1212,6 +1253,10 @@ void setup_websocket_server() {
             [](AsyncWebServerRequest *request) {},
             nullptr,
             handleApiConfig);
+  server.on("/api/discover", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String json = "{\"name\":\"" + String(serverName) + "\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"hostname\":\"" + String(serverName) + ".local\"}";
+    request->send(200, "application/json", json);
+  });
 
   server.onNotFound([](AsyncWebServerRequest *request) {
     request->send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
@@ -1239,7 +1284,7 @@ void setup_i2s_in() {
       .fixed_mclk = 0
   };
 
-  esp_err_t err = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  esp_err_t err = i2s_driver_install(I2S_PORT_IN, &i2s_config, 0, NULL);
   if (err != ESP_OK) {
     LOGE("i2s_driver_install() FAILED, error %d", (int)err);
     return;
@@ -1253,7 +1298,7 @@ void setup_i2s_in() {
       .data_in_num  = pinBtDin
   };
 
-  err = i2s_set_pin(I2S_PORT, &pin_config);
+  err = i2s_set_pin(I2S_PORT_IN, &pin_config);
   if (err != ESP_OK) {
     LOGE("i2s_set_pin() FAILED, error %d", (int)err);
     return;
@@ -1262,6 +1307,49 @@ void setup_i2s_in() {
   LOGI("  I2S pins -> BCLK:%d  LRC/WS:%d  DIN(DATA IN):%d", pinBtBclk, pinBtLrc, pinBtDin);
   LOGI("  I2S mode  -> SLAVE / RX, %d Hz, 16-bit, stereo", SOURCE_SAMPLE_RATE);
   LOGI("I2S input ready, waiting for clock/data from upstream ESP32...");
+}
+
+/** Sets up I2S peripheral in MASTER TX mode to send audio to local DAC. */
+void setup_i2s_out() {
+  LOGI("Configuring I2S output (sending audio to local DAC)...");
+
+  i2s_config_t i2s_config = {
+      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+      .sample_rate = OPUS_SAMPLE_RATE,
+      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+      .dma_buf_count = 8,
+      .dma_buf_len = 256,
+      .use_apll = false,
+      .tx_desc_auto_clear = true,
+      .fixed_mclk = 0
+  };
+
+  esp_err_t err = i2s_driver_install(I2S_PORT_OUT, &i2s_config, 0, NULL);
+  if (err != ESP_OK) {
+    LOGE("i2s_driver_install() FAILED for output, error %d", (int)err);
+    return;
+  }
+
+  i2s_pin_config_t pin_config = {
+      .mck_io_num   = I2S_PIN_NO_CHANGE,
+      .bck_io_num   = pinDacBclk,
+      .ws_io_num    = pinDacLrc,
+      .data_out_num = pinDacDout,
+      .data_in_num  = I2S_PIN_NO_CHANGE
+  };
+
+  err = i2s_set_pin(I2S_PORT_OUT, &pin_config);
+  if (err != ESP_OK) {
+    LOGE("i2s_set_pin() FAILED for output, error %d", (int)err);
+    return;
+  }
+
+  LOGI("  I2S pins -> BCLK:%d  LRC/WS:%d  DOUT(DATA OUT):%d", pinDacBclk, pinDacLrc, pinDacDout);
+  LOGI("  I2S mode  -> MASTER / TX, %d Hz, 16-bit, stereo", OPUS_SAMPLE_RATE);
+  LOGI("I2S output ready, audio will be sent to local DAC...");
 }
 
 /** Allocates queues and starts I2S read, processing, and websocket sender tasks. */
@@ -1286,11 +1374,20 @@ void setup_queues_and_tasks() {
 /** Arduino setup entrypoint initializing network, codec pipeline, and workers. */
 void setup() {
   setup_serial();
+  pinMode(PIN_FACTORY_RESET, INPUT_PULLUP);
   loadWiFiSettings();
-  setup_wifi_sta();
+
+  if (digitalRead(PIN_FACTORY_RESET) == LOW && factoryResetPinHeld(FACTORY_RESET_HOLD_MS)) {
+    resetNetworkSettingsToDefaults();
+    startSetupAccessPoint();
+  } else {
+    setup_wifi_sta();
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     if (MDNS.begin(serverName.c_str())) {
       MDNS.addService("http", "tcp", 80);
+      MDNS.addService("enkelsrv", "tcp", 80);
       LOGI("mDNS available at http://%s.local/", serverName.c_str());
     } else {
       LOGW("mDNS startup failed");
@@ -1301,6 +1398,7 @@ void setup() {
   setupReceiverLink();
   sendReceiverSourceCommand(lastReceiverSource);
   setup_i2s_in();
+  setup_i2s_out();
   setup_queues_and_tasks();
 
   LOGI("=========================================================");
@@ -1312,6 +1410,32 @@ void setup() {
 // LOOP
 // ============================================================================
 unsigned long lastStatsMs = 0;
+
+/**
+ * Restores the default IP settings and reboots into AP mode when GPIO 0 is
+ * held to GND for FACTORY_RESET_HOLD_MS.
+ */
+void handleFactoryResetPin() {
+  static unsigned long pinLowSinceMs = 0;
+
+  if (digitalRead(PIN_FACTORY_RESET) != LOW) {
+    pinLowSinceMs = 0;
+    return;
+  }
+
+  unsigned long now = millis();
+  if (pinLowSinceMs == 0) {
+    pinLowSinceMs = now;
+    return;
+  }
+
+  if (now - pinLowSinceMs < FACTORY_RESET_HOLD_MS) return;
+
+  resetNetworkSettingsToDefaults();
+  LOGW("Factory reset: restarting into AP mode at %s", ap_local_ip.toString().c_str());
+  delay(200);
+  ESP.restart();
+}
 
 /** Arduino loop for periodic stats and websocket housekeeping. */
 void loop() {
@@ -1355,7 +1479,6 @@ void loop() {
     LOGI("Free heap          : %u bytes", ESP.getFreeHeap());
     LOGI("---------------------------------------------------------");
 
-    // Snapshot rolling five-second counters for the control-panel streaming view.
     statI2sBytesLast5s = statI2sBytesIn;
     statRawDroppedLast5s = rawDroppedDelta;
     statOpusEncodedLast5s = opusEncodedDelta;
@@ -1369,6 +1492,7 @@ void loop() {
     statLatencyCount = 0;
   }
 
+  handleFactoryResetPin();
   ws.cleanupClients();
   handleReceiverLink();
   delay(10);
