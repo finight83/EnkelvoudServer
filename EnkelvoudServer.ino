@@ -12,11 +12,14 @@
       ws://<server-ip>/audio
 
   Added on top of the known-good working audio pipeline:
-    - HTTP GET /            -> EVDCTRL_HTML
+    - HTTP GET /            -> EVDCTRL_HTML (control page; routes registered
+                               via evdctrlRegisterRoutes() in EVDCTRL.h)
     - HTTP GET /player      -> EVDPLR_HTML
     - HTTP GET /api/status  -> JSON status
+    - POST /api/config      -> update volume/mute/latency/buffer/name
     - POST /api/source      -> bridge source selection to upstream receiver
     - POST /api/cmd         -> bridge command (next/prev/bt/aux/usb) upstream
+    - POST /api/restart     -> restart the ESP32-S3
 
   IMPORTANT
   ---------
@@ -179,11 +182,13 @@ static portMUX_TYPE oggTestMux = portMUX_INITIALIZER_UNLOCKED;
 // ----------------------------------------------------------------------------
 static volatile uint32_t statI2sBytesIn     = 0;
 static volatile uint32_t statI2sReadErrors  = 0;
+static volatile uint32_t statLocalDacStalls = 0;
 static volatile uint32_t statRawDropped     = 0;
 static volatile uint32_t statOpusEncoded    = 0;
 static volatile uint32_t statOpusDropped    = 0;
 static volatile uint32_t statWsPacketsSent  = 0;
 static volatile uint32_t statWsBytesSent    = 0;
+static volatile uint32_t statWsClientsBackpressured = 0;
 static volatile uint32_t statI2sBytesLast5s = 0;
 static volatile uint32_t statRawDroppedLast5s = 0;
 static volatile uint32_t statOpusEncodedLast5s = 0;
@@ -794,10 +799,17 @@ void audioProcessingTask(void *param) {
         }
       }
 
-      // Send to local DAC (if not muted)
+      // Send to local DAC (if not muted). Bounded wait: a stalled or slow
+      // local DAC must never be able to block Opus encoding / streaming to
+      // remote players, which happens right after this in the same task.
       if (!masterMuted) {
-        size_t bytes_written;
-        i2s_write(I2S_PORT_OUT, pendingBuf, OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+        size_t bytes_written = 0;
+        esp_err_t werr = i2s_write(I2S_PORT_OUT, pendingBuf,
+                                    OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t),
+                                    &bytes_written, pdMS_TO_TICKS(15));
+        if (werr != ESP_OK || bytes_written == 0) {
+          statLocalDacStalls++;
+        }
       }
 
       int nbytes = opus_encode(opusEncoder, pendingBuf, OPUS_FRAME_SAMPLES, pkt.data, OPUS_MAX_PACKET_BYTES);
@@ -836,7 +848,21 @@ void wsSendTask(void *param) {
         if (remainingMs > 0) vTaskDelay(pdMS_TO_TICKS((uint32_t)remainingMs));
       }
 
-      ws.binaryAll(pkt.data, pkt.len);
+      // Send per-client instead of ws.binaryAll(): a client that can't keep
+      // up (weak Wi-Fi, its own decode task falling behind, etc.) would
+      // otherwise get an ever-growing backlog queued for it in heap, which
+      // eventually starves malloc() everywhere else in this pipeline
+      // (including i2sReadTask's per-chunk allocation) and takes local
+      // playback down with it. Skipping a backed-up client drops audio for
+      // that client only, instead of memory for everyone.
+      for (AsyncWebSocketClient &client : ws.getClients()) {
+        if (client.status() != WS_CONNECTED) continue;
+        if (client.queueIsFull()) {
+          statWsClientsBackpressured++;
+          continue;
+        }
+        client.binary(pkt.data, pkt.len);
+      }
       statWsPacketsSent++;
       statWsBytesSent += pkt.len;
 
@@ -1217,42 +1243,20 @@ void setup_websocket_server() {
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (WiFi.status() != WL_CONNECTED) {
-      handleNetworkSettings(request);
-      return;
-    }
-    request->send(200, "text/html; charset=utf-8", EVDCTRL_HTML);
-  });
+  // "/" control page + /api/status, /api/config, /api/source, /api/cmd, /api/restart
+  evdctrlRegisterRoutes(server);
 
   server.on("/settings", HTTP_GET, handleNetworkSettings);
   server.on("/save", HTTP_POST, handleSaveNetworkSettings);
   server.on("/api/network-test", HTTP_GET, handleNetworkTestStatus);
-  server.on("/api/restart", HTTP_POST, handleRestart);
 
   server.on("/player", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html; charset=utf-8", EVDPLR_HTML);
   });
 
-  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-    handleApiStatus(request);
-  });
   server.on("/stream.ogg", HTTP_GET, handleOggTestStream);
   server.on("/api/player/register", HTTP_POST, handlePlayerRegistration);
 
-  server.on("/api/source", HTTP_POST,
-            [](AsyncWebServerRequest *request) {},
-            nullptr,
-            handleApiSourceBridge);
-
-  server.on("/api/cmd", HTTP_POST,
-            [](AsyncWebServerRequest *request) {},
-            nullptr,
-            handleApiCmdBridge);
-  server.on("/api/config", HTTP_POST,
-            [](AsyncWebServerRequest *request) {},
-            nullptr,
-            handleApiConfig);
   server.on("/api/discover", HTTP_GET, [](AsyncWebServerRequest *request) {
     String json = "{\"name\":\"" + String(serverName) + "\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"hostname\":\"" + String(serverName) + ".local\"}";
     request->send(200, "application/json", json);
@@ -1469,7 +1473,8 @@ void loop() {
          wifiUp ? "CONNECTED" : (accessPointActive ? "AP MODE" : "DISCONNECTED"), WiFi.RSSI());
     LOGI("Device IP addr     : %s  | Gateway: %s", devIp.toString().c_str(), devGateway.toString().c_str());
     LOGI("WebSocket URL      : ws://%s/audio", devIp.toString().c_str());
-    LOGI("I2S bytes in       : %u  | read errors: %u", statI2sBytesIn, statI2sReadErrors);
+    LOGI("I2S bytes in       : %u  | read errors: %u  | local DAC stalls: %u", statI2sBytesIn, statI2sReadErrors, statLocalDacStalls);
+    LOGI("WS backpressured   : %u packets skipped total for slow clients", statWsClientsBackpressured);
     LOGI("Raw chunks dropped : %u", rawDroppedDelta);
     LOGI("Opus frames encoded: %u  | dropped: %u", opusEncodedDelta, opusDroppedDelta);
     LOGI("WS clients         : %d", wsClientCount);
