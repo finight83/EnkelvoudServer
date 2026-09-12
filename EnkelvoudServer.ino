@@ -181,6 +181,14 @@ static uint8_t oggTestWriteIndex = 0;
 static uint8_t oggTestPacketCount = 0;
 static portMUX_TYPE oggTestMux = portMUX_INITIALIZER_UNLOCKED;
 
+bool returnRawChunkToPool(RawChunk *chunk) {
+  BaseType_t returned = xQueueSend(rawFreeQueue, &chunk, 0);
+  if (returned == pdTRUE) return true;
+  LOGE("rawFreeQueue invariant broken");
+  configASSERT(returned == pdTRUE);
+  return false;
+}
+
 // ----------------------------------------------------------------------------
 // STATS
 // ----------------------------------------------------------------------------
@@ -757,7 +765,7 @@ void i2sReadTask(void *param) {
     chunk->captured_ms = millis();
 
     if (xQueueSend(rawQueue, &chunk, 0) != pdTRUE) {
-      xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
+      returnRawChunkToPool(chunk);
       statRawDropped++;
     }
   }
@@ -831,7 +839,7 @@ void audioProcessingTask(void *param) {
       pendingOldestCapturedMs += 20;
     }
 
-    xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
+    returnRawChunkToPool(chunk);
   }
 }
 
