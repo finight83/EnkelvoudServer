@@ -157,7 +157,10 @@ struct RawChunk {
   uint32_t captured_ms;
 };
 static QueueHandle_t rawQueue = nullptr;
+static QueueHandle_t rawFreeQueue = nullptr;
 #define RAW_QUEUE_LEN 32
+#define RAW_CHUNK_POOL_LEN (RAW_QUEUE_LEN + 1)
+static RawChunk rawChunkPool[RAW_CHUNK_POOL_LEN];
 
 /** Encoded Opus packet produced by audioProcessingTask and consumed by wsSendTask. */
 struct OpusPacket {
@@ -743,12 +746,18 @@ void i2sReadTask(void *param) {
     statI2sBytesIn += bytesRead;
     statI2sBytesTotal += bytesRead;
 
-    RawChunk chunk;
-    memcpy(chunk.data, i2sBuf, bytesRead);
-    chunk.len = bytesRead;
-    chunk.captured_ms = millis();
+    RawChunk *chunk = nullptr;
+    if (xQueueReceive(rawFreeQueue, &chunk, 0) != pdTRUE || !chunk) {
+      statRawDropped++;
+      continue;
+    }
+
+    memcpy(chunk->data, i2sBuf, bytesRead);
+    chunk->len = bytesRead;
+    chunk->captured_ms = millis();
 
     if (xQueueSend(rawQueue, &chunk, 0) != pdTRUE) {
+      xQueueSend(rawFreeQueue, &chunk, 0);
       statRawDropped++;
     }
   }
@@ -758,21 +767,26 @@ void i2sReadTask(void *param) {
 void audioProcessingTask(void *param) {
   LOGI("audioProcessingTask started on core %d", xPortGetCoreID());
   static int16_t resampledScratch[8192];
-  RawChunk chunk;
+  RawChunk *chunk = nullptr;
 
   for (;;) {
     if (xQueueReceive(rawQueue, &chunk, portMAX_DELAY) != pdTRUE) continue;
+    if (!chunk) continue;
 
-    uint32_t inFrames = chunk.len / (2 * sizeof(int16_t));
-    const int16_t *inSamples = (const int16_t *)chunk.data;
+    uint32_t inFrames = chunk->len / (2 * sizeof(int16_t));
+    const int16_t *inSamples = (const int16_t *)chunk->data;
 
-    if (pendingCount == 0) pendingOldestCapturedMs = chunk.captured_ms;
+    if (pendingCount == 0) pendingOldestCapturedMs = chunk->captured_ms;
 
     uint32_t produced = resampler.process(
       inSamples, inFrames,
       resampledScratch,
       sizeof(resampledScratch) / (2 * sizeof(int16_t))
     );
+
+    if (xQueueSend(rawFreeQueue, &chunk, 0) != pdTRUE) {
+      LOGW("rawFreeQueue returned full; dropping pool slot");
+    }
 
     for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
       pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
@@ -928,6 +942,7 @@ void handleApiStatus(AsyncWebServerRequest *request) {
   json += "\"audioBufferMs\":" + String(audioBufferMs) + ",";
   json += "\"wsClients\":" + String(wsClientCount) + ",";
   json += "\"rawQueueDepth\":" + String(rawQueue ? uxQueueMessagesWaiting(rawQueue) : 0) + ",";
+  json += "\"rawPoolFree\":" + String(rawFreeQueue ? uxQueueMessagesWaiting(rawFreeQueue) : 0) + ",";
   json += "\"opusQueueDepth\":" + String(opusQueue ? uxQueueMessagesWaiting(opusQueue) : 0) + ",";
   json += "\"i2sBytesIn\":" + String(statI2sBytesIn) + ",";
   json += "\"i2sReadErrors\":" + String(statI2sReadErrors) + ",";
@@ -1357,12 +1372,21 @@ void setup_i2s_out() {
 void setup_queues_and_tasks() {
   LOGI("Creating queues and background tasks...");
 
-  rawQueue  = xQueueCreate(RAW_QUEUE_LEN, sizeof(RawChunk));
+  rawQueue = xQueueCreate(RAW_QUEUE_LEN, sizeof(RawChunk *));
+  rawFreeQueue = xQueueCreate(RAW_CHUNK_POOL_LEN, sizeof(RawChunk *));
   opusQueue = xQueueCreate(OPUS_QUEUE_LEN, sizeof(OpusPacket));
 
-  if (!rawQueue || !opusQueue) {
+  if (!rawQueue || !rawFreeQueue || !opusQueue) {
     LOGE("Failed to create one or more queues!");
     return;
+  }
+
+  for (size_t i = 0; i < RAW_CHUNK_POOL_LEN; ++i) {
+    RawChunk *chunk = &rawChunkPool[i];
+    if (xQueueSend(rawFreeQueue, &chunk, 0) != pdTRUE) {
+      LOGE("Failed to seed raw chunk pool");
+      return;
+    }
   }
 
   xTaskCreatePinnedToCore(i2sReadTask,         "i2sRead",   4096, nullptr, 3, nullptr, 1);
@@ -1470,8 +1494,9 @@ void loop() {
          wifiUp ? "CONNECTED" : (accessPointActive ? "AP MODE" : "DISCONNECTED"), WiFi.RSSI());
     LOGI("Device IP addr     : %s  | Gateway: %s", devIp.toString().c_str(), devGateway.toString().c_str());
     LOGI("WebSocket URL      : ws://%s/audio", devIp.toString().c_str());
-    LOGI("Queue depth        : raw=%u/%u  opus=%u/%u",
+    LOGI("Queue depth        : raw=%u/%u  rawFree=%u/%u  opus=%u/%u",
              rawQueue ? (unsigned)uxQueueMessagesWaiting(rawQueue) : 0U, RAW_QUEUE_LEN,
+             rawFreeQueue ? (unsigned)uxQueueMessagesWaiting(rawFreeQueue) : 0U, RAW_CHUNK_POOL_LEN,
              opusQueue ? (unsigned)uxQueueMessagesWaiting(opusQueue) : 0U, OPUS_QUEUE_LEN);
     LOGI("I2S bytes in       : %u  | read errors: %u  | local DAC stalls: %u", statI2sBytesIn, statI2sReadErrors, statLocalDacStalls);
     LOGI("WS backpressured   : %u packets skipped total for slow clients", statWsClientsBackpressured);
