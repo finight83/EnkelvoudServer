@@ -757,7 +757,7 @@ void i2sReadTask(void *param) {
     chunk->captured_ms = millis();
 
     if (xQueueSend(rawQueue, &chunk, 0) != pdTRUE) {
-      xQueueSend(rawFreeQueue, &chunk, 0);
+      xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
       statRawDropped++;
     }
   }
@@ -784,9 +784,7 @@ void audioProcessingTask(void *param) {
       sizeof(resampledScratch) / (2 * sizeof(int16_t))
     );
 
-    if (xQueueSend(rawFreeQueue, &chunk, 0) != pdTRUE) {
-      LOGW("rawFreeQueue returned full; dropping pool slot");
-    }
+    xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
 
     for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
       pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
