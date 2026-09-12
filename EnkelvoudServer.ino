@@ -784,13 +784,13 @@ void audioProcessingTask(void *param) {
       sizeof(resampledScratch) / (2 * sizeof(int16_t))
     );
 
-    xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
-
     for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
       pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
       pendingBuf[pendingCount * 2 + 1] = resampledScratch[i * 2 + 1];
       pendingCount++;
     }
+
+    xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
 
     while (pendingCount >= OPUS_FRAME_SAMPLES) {
       OpusPacket pkt;
