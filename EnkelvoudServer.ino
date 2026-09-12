@@ -654,11 +654,22 @@ void drainPendingFrames() {
     // remote players, which happens right after this in the same task.
     if (!masterMuted) {
       size_t frameBytes = OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t);
-      size_t bytes_written = 0;
-      esp_err_t werr = i2s_write(I2S_PORT_OUT, pendingBuf,
-                                  frameBytes,
-                                  &bytes_written, pdMS_TO_TICKS(LOCAL_DAC_WRITE_TIMEOUT_MS));
-      if (werr != ESP_OK || bytes_written < frameBytes) {
+      size_t totalWritten = 0;
+      esp_err_t werr = ESP_OK;
+      TickType_t startTicks = xTaskGetTickCount();
+      TickType_t timeoutTicks = pdMS_TO_TICKS(LOCAL_DAC_WRITE_TIMEOUT_MS);
+
+      while (totalWritten < frameBytes) {
+        size_t bytesWritten = 0;
+        TickType_t elapsed = xTaskGetTickCount() - startTicks;
+        TickType_t remainingTicks = timeoutTicks > elapsed ? timeoutTicks - elapsed : 0;
+        werr = i2s_write(I2S_PORT_OUT, ((const uint8_t *)pendingBuf) + totalWritten,
+                         frameBytes - totalWritten, &bytesWritten, remainingTicks);
+        totalWritten += bytesWritten;
+        if (werr != ESP_OK || bytesWritten == 0 || remainingTicks == 0) break;
+      }
+
+      if (werr != ESP_OK || totalWritten < frameBytes) {
         statLocalDacStalls++;
       }
     }
