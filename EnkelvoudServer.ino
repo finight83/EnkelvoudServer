@@ -125,6 +125,7 @@ const char *RECEIVER_TOKEN = ""; // set if receiver CONTROL_TOKEN is enabled
 #define OPUS_MAX_PACKET_BYTES 1500
 #define OGG_TEST_PACKET_COUNT 150
 #define OGG_TEST_MAX_PACKET_BYTES 256
+#define LOCAL_DAC_WRITE_TIMEOUT_MS 2
 
 #define I2S_PORT_IN           I2S_NUM_0
 #define I2S_PORT_OUT          I2S_NUM_1
@@ -151,12 +152,15 @@ Preferences preferences;
 // ----------------------------------------------------------------------------
 /** Raw I2S PCM chunk produced by i2sReadTask and consumed by audioProcessingTask. */
 struct RawChunk {
-  uint8_t *data;
+  uint8_t data[I2S_READ_CHUNK_BYTES];
   uint32_t len;
   uint32_t captured_ms;
 };
 static QueueHandle_t rawQueue = nullptr;
+static QueueHandle_t rawFreeQueue = nullptr;
 #define RAW_QUEUE_LEN 32
+#define RAW_CHUNK_POOL_LEN (RAW_QUEUE_LEN + 1)
+static RawChunk rawChunkPool[RAW_CHUNK_POOL_LEN];
 
 /** Encoded Opus packet produced by audioProcessingTask and consumed by wsSendTask. */
 struct OpusPacket {
@@ -605,6 +609,91 @@ static int16_t pendingBuf[PENDING_MAX_FRAMES * 2];
 static uint32_t pendingCount = 0;
 static uint32_t pendingOldestCapturedMs = 0;
 
+bool returnRawChunkToPool(RawChunk *chunk) {
+  BaseType_t returned = xQueueSend(rawFreeQueue, &chunk, 0);
+  if (returned == pdTRUE) return true;
+  LOGE("rawFreeQueue invariant broken");
+  configASSERT(returned == pdTRUE);
+  return false;
+}
+
+void appendResampledChunk(const RawChunk &chunk) {
+  static int16_t resampledScratch[8192];
+
+  uint32_t inFrames = chunk.len / (2 * sizeof(int16_t));
+  const int16_t *inSamples = (const int16_t *)chunk.data;
+
+  if (pendingCount == 0) pendingOldestCapturedMs = chunk.captured_ms;
+
+  uint32_t produced = resampler.process(
+    inSamples, inFrames,
+    resampledScratch,
+    sizeof(resampledScratch) / (2 * sizeof(int16_t))
+  );
+
+  for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
+    pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
+    pendingBuf[pendingCount * 2 + 1] = resampledScratch[i * 2 + 1];
+    pendingCount++;
+  }
+}
+
+void drainPendingFrames() {
+  while (pendingCount >= OPUS_FRAME_SAMPLES) {
+    OpusPacket pkt;
+    pkt.captured_ms = pendingOldestCapturedMs;
+
+    if (masterVolume < 100) {
+      for (uint32_t i = 0; i < OPUS_FRAME_SAMPLES * CHANNELS; ++i) {
+        pendingBuf[i] = (int16_t)((int32_t)pendingBuf[i] * masterVolume / 100);
+      }
+    }
+
+    // Send to local DAC (if not muted). Bounded wait: a stalled or slow
+    // local DAC must never be able to block Opus encoding / streaming to
+    // remote players, which happens right after this in the same task.
+    if (!masterMuted) {
+      size_t frameBytes = OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t);
+      size_t totalWritten = 0;
+      esp_err_t werr = ESP_OK;
+      TickType_t startTicks = xTaskGetTickCount();
+      TickType_t timeoutTicks = pdMS_TO_TICKS(LOCAL_DAC_WRITE_TIMEOUT_MS);
+
+      while (totalWritten < frameBytes) {
+        size_t bytesWritten = 0;
+        TickType_t elapsed = xTaskGetTickCount() - startTicks;
+        TickType_t remainingTicks = timeoutTicks > elapsed ? timeoutTicks - elapsed : 0;
+        if (remainingTicks == 0) break;
+        werr = i2s_write(I2S_PORT_OUT, ((const uint8_t *)pendingBuf) + totalWritten,
+                         frameBytes - totalWritten, &bytesWritten, remainingTicks);
+        totalWritten += bytesWritten;
+        if (werr != ESP_OK || bytesWritten == 0) break;
+      }
+
+      if (werr != ESP_OK || totalWritten < frameBytes) {
+        statLocalDacStalls++;
+      }
+    }
+
+    int nbytes = opus_encode(opusEncoder, pendingBuf, OPUS_FRAME_SAMPLES, pkt.data, OPUS_MAX_PACKET_BYTES);
+    if (nbytes < 0) {
+      LOGE("opus_encode() failed, error code %d", nbytes);
+    } else {
+      pkt.len = nbytes;
+      if (xQueueSend(opusQueue, &pkt, 0) != pdTRUE) {
+        statOpusDropped++;
+      } else {
+        statOpusEncoded++;
+      }
+    }
+
+    uint32_t remaining = pendingCount - OPUS_FRAME_SAMPLES;
+    memmove(pendingBuf, pendingBuf + OPUS_FRAME_SAMPLES * 2, remaining * 2 * sizeof(int16_t));
+    pendingCount = remaining;
+    pendingOldestCapturedMs += 20;
+  }
+}
+
 // ============================================================================
 // BRIDGE HELPERS
 // ============================================================================
@@ -742,20 +831,18 @@ void i2sReadTask(void *param) {
     statI2sBytesIn += bytesRead;
     statI2sBytesTotal += bytesRead;
 
-    uint8_t *copy = (uint8_t *)malloc(bytesRead);
-    if (!copy) {
+    RawChunk *chunk = nullptr;
+    if (xQueueReceive(rawFreeQueue, &chunk, 0) != pdTRUE || !chunk) {
       statRawDropped++;
       continue;
     }
-    memcpy(copy, i2sBuf, bytesRead);
 
-    RawChunk chunk;
-    chunk.data = copy;
-    chunk.len = bytesRead;
-    chunk.captured_ms = millis();
+    memcpy(chunk->data, i2sBuf, bytesRead);
+    chunk->len = bytesRead;
+    chunk->captured_ms = millis();
 
     if (xQueueSend(rawQueue, &chunk, 0) != pdTRUE) {
-      free(copy);
+      returnRawChunkToPool(chunk);
       statRawDropped++;
     }
   }
@@ -764,71 +851,15 @@ void i2sReadTask(void *param) {
 /** Converts raw PCM to Opus by resampling and frame encoding. */
 void audioProcessingTask(void *param) {
   LOGI("audioProcessingTask started on core %d", xPortGetCoreID());
-  static int16_t resampledScratch[8192];
-  RawChunk chunk;
+  RawChunk *chunk = nullptr;
 
   for (;;) {
     if (xQueueReceive(rawQueue, &chunk, portMAX_DELAY) != pdTRUE) continue;
+    if (!chunk) continue;
 
-    uint32_t inFrames = chunk.len / (2 * sizeof(int16_t));
-    const int16_t *inSamples = (const int16_t *)chunk.data;
-
-    if (pendingCount == 0) pendingOldestCapturedMs = chunk.captured_ms;
-
-    uint32_t produced = resampler.process(
-      inSamples, inFrames,
-      resampledScratch,
-      sizeof(resampledScratch) / (2 * sizeof(int16_t))
-    );
-
-    free(chunk.data);
-
-    for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
-      pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
-      pendingBuf[pendingCount * 2 + 1] = resampledScratch[i * 2 + 1];
-      pendingCount++;
-    }
-
-    while (pendingCount >= OPUS_FRAME_SAMPLES) {
-      OpusPacket pkt;
-      pkt.captured_ms = pendingOldestCapturedMs;
-
-      if (masterVolume < 100) {
-        for (uint32_t i = 0; i < OPUS_FRAME_SAMPLES * CHANNELS; ++i) {
-          pendingBuf[i] = (int16_t)((int32_t)pendingBuf[i] * masterVolume / 100);
-        }
-      }
-
-      // Send to local DAC (if not muted). Bounded wait: a stalled or slow
-      // local DAC must never be able to block Opus encoding / streaming to
-      // remote players, which happens right after this in the same task.
-      if (!masterMuted) {
-        size_t bytes_written = 0;
-        esp_err_t werr = i2s_write(I2S_PORT_OUT, pendingBuf,
-                                    OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t),
-                                    &bytes_written, pdMS_TO_TICKS(15));
-        if (werr != ESP_OK || bytes_written == 0) {
-          statLocalDacStalls++;
-        }
-      }
-
-      int nbytes = opus_encode(opusEncoder, pendingBuf, OPUS_FRAME_SAMPLES, pkt.data, OPUS_MAX_PACKET_BYTES);
-      if (nbytes < 0) {
-        LOGE("opus_encode() failed, error code %d", nbytes);
-      } else {
-        pkt.len = nbytes;
-        if (xQueueSend(opusQueue, &pkt, 0) != pdTRUE) {
-          statOpusDropped++;
-        } else {
-          statOpusEncoded++;
-        }
-      }
-
-      uint32_t remaining = pendingCount - OPUS_FRAME_SAMPLES;
-      memmove(pendingBuf, pendingBuf + OPUS_FRAME_SAMPLES * 2, remaining * 2 * sizeof(int16_t));
-      pendingCount = remaining;
-      pendingOldestCapturedMs += 20;
-    }
+    appendResampledChunk(*chunk);
+    returnRawChunkToPool(chunk);
+    drainPendingFrames();
   }
 }
 
@@ -936,13 +967,20 @@ void handleApiStatus(AsyncWebServerRequest *request) {
   json += "\"latencyAdjustmentMs\":" + String(latencyAdjustmentMs) + ",";
   json += "\"audioBufferMs\":" + String(audioBufferMs) + ",";
   json += "\"wsClients\":" + String(wsClientCount) + ",";
+  json += "\"rawQueueDepth\":" + String(rawQueue ? uxQueueMessagesWaiting(rawQueue) : 0) + ",";
+  json += "\"rawPoolFree\":" + String(rawFreeQueue ? uxQueueMessagesWaiting(rawFreeQueue) : 0) + ",";
+  json += "\"opusQueueDepth\":" + String(opusQueue ? uxQueueMessagesWaiting(opusQueue) : 0) + ",";
   json += "\"i2sBytesIn\":" + String(statI2sBytesIn) + ",";
   json += "\"i2sReadErrors\":" + String(statI2sReadErrors) + ",";
+  json += "\"localDacStalls\":" + String(statLocalDacStalls) + ",";
   json += "\"rawDropped\":" + String(statRawDropped) + ",";
   json += "\"opusEncoded\":" + String(statOpusEncoded) + ",";
   json += "\"opusDropped\":" + String(statOpusDropped) + ",";
   json += "\"wsPacketsSent\":" + String(statWsPacketsSent) + ",";
   json += "\"wsBytesSent\":" + String(statWsBytesSent) + ",";
+  json += "\"wsBackpressured\":" + String(statWsClientsBackpressured) + ",";
+  json += "\"freeHeap\":" + String(ESP.getFreeHeap()) + ",";
+  json += "\"minFreeHeap\":" + String(ESP.getMinFreeHeap()) + ",";
   json += "\"streaming\":{\"i2sBytesLast5s\":" + String(statI2sBytesLast5s) + ",";
   json += "\"i2sBytesTotal\":" + String((uint32_t)statI2sBytesTotal) + ",";
   json += "\"rawDroppedLast5s\":" + String(statRawDroppedLast5s) + ",";
@@ -1360,12 +1398,27 @@ void setup_i2s_out() {
 void setup_queues_and_tasks() {
   LOGI("Creating queues and background tasks...");
 
-  rawQueue  = xQueueCreate(RAW_QUEUE_LEN, sizeof(RawChunk));
+  rawQueue = xQueueCreate(RAW_QUEUE_LEN, sizeof(RawChunk *));
+  rawFreeQueue = xQueueCreate(RAW_CHUNK_POOL_LEN, sizeof(RawChunk *));
   opusQueue = xQueueCreate(OPUS_QUEUE_LEN, sizeof(OpusPacket));
 
-  if (!rawQueue || !opusQueue) {
+  if (!rawQueue || !rawFreeQueue || !opusQueue) {
     LOGE("Failed to create one or more queues!");
     return;
+  }
+
+  for (size_t i = 0; i < RAW_CHUNK_POOL_LEN; ++i) {
+    RawChunk *chunk = &rawChunkPool[i];
+    if (xQueueSend(rawFreeQueue, &chunk, 0) != pdTRUE) {
+      LOGE("Failed to seed raw chunk pool");
+      if (rawQueue) vQueueDelete(rawQueue);
+      if (rawFreeQueue) vQueueDelete(rawFreeQueue);
+      if (opusQueue) vQueueDelete(opusQueue);
+      rawQueue = nullptr;
+      rawFreeQueue = nullptr;
+      opusQueue = nullptr;
+      return;
+    }
   }
 
   xTaskCreatePinnedToCore(i2sReadTask,         "i2sRead",   4096, nullptr, 3, nullptr, 1);
@@ -1473,6 +1526,10 @@ void loop() {
          wifiUp ? "CONNECTED" : (accessPointActive ? "AP MODE" : "DISCONNECTED"), WiFi.RSSI());
     LOGI("Device IP addr     : %s  | Gateway: %s", devIp.toString().c_str(), devGateway.toString().c_str());
     LOGI("WebSocket URL      : ws://%s/audio", devIp.toString().c_str());
+    LOGI("Queue depth        : raw=%u/%u  rawFree=%u/%u  opus=%u/%u",
+             rawQueue ? (unsigned)uxQueueMessagesWaiting(rawQueue) : 0U, RAW_QUEUE_LEN,
+             rawFreeQueue ? (unsigned)uxQueueMessagesWaiting(rawFreeQueue) : 0U, RAW_CHUNK_POOL_LEN,
+             opusQueue ? (unsigned)uxQueueMessagesWaiting(opusQueue) : 0U, OPUS_QUEUE_LEN);
     LOGI("I2S bytes in       : %u  | read errors: %u  | local DAC stalls: %u", statI2sBytesIn, statI2sReadErrors, statLocalDacStalls);
     LOGI("WS backpressured   : %u packets skipped total for slow clients", statWsClientsBackpressured);
     LOGI("Raw chunks dropped : %u", rawDroppedDelta);
@@ -1481,7 +1538,7 @@ void loop() {
     LOGI("WS packets sent    : %u  | bytes: %u (%.1f kbps)", statWsPacketsSent, statWsBytesSent, kbps);
     LOGI("Avg latency (capture->send): %.1f ms", avgLatency);
     LOGI("Bridge -> host:%s code:%u src:%s", RECEIVER_HOST, lastBridgeHttpCode, lastReceiverSource.c_str());
-    LOGI("Free heap          : %u bytes", ESP.getFreeHeap());
+    LOGI("Free heap          : %u bytes (min: %u)", ESP.getFreeHeap(), ESP.getMinFreeHeap());
     LOGI("---------------------------------------------------------");
 
     statI2sBytesLast5s = statI2sBytesIn;
