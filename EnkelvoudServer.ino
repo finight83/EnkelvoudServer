@@ -663,10 +663,11 @@ void drainPendingFrames() {
         size_t bytesWritten = 0;
         TickType_t elapsed = xTaskGetTickCount() - startTicks;
         TickType_t remainingTicks = timeoutTicks > elapsed ? timeoutTicks - elapsed : 0;
+        if (remainingTicks == 0) break;
         werr = i2s_write(I2S_PORT_OUT, ((const uint8_t *)pendingBuf) + totalWritten,
                          frameBytes - totalWritten, &bytesWritten, remainingTicks);
         totalWritten += bytesWritten;
-        if (werr != ESP_OK || bytesWritten == 0 || remainingTicks == 0) break;
+        if (werr != ESP_OK || bytesWritten == 0) break;
       }
 
       if (werr != ESP_OK || totalWritten < frameBytes) {
