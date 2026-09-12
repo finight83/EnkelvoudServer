@@ -653,11 +653,12 @@ void drainPendingFrames() {
     // local DAC must never be able to block Opus encoding / streaming to
     // remote players, which happens right after this in the same task.
     if (!masterMuted) {
+      size_t frameBytes = OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t);
       size_t bytes_written = 0;
       esp_err_t werr = i2s_write(I2S_PORT_OUT, pendingBuf,
-                                  OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t),
+                                  frameBytes,
                                   &bytes_written, pdMS_TO_TICKS(LOCAL_DAC_WRITE_TIMEOUT_MS));
-      if (werr != ESP_OK || bytes_written == 0) {
+      if (werr != ESP_OK || bytes_written < frameBytes) {
         statLocalDacStalls++;
       }
     }
