@@ -181,14 +181,6 @@ static uint8_t oggTestWriteIndex = 0;
 static uint8_t oggTestPacketCount = 0;
 static portMUX_TYPE oggTestMux = portMUX_INITIALIZER_UNLOCKED;
 
-bool returnRawChunkToPool(RawChunk *chunk) {
-  BaseType_t returned = xQueueSend(rawFreeQueue, &chunk, 0);
-  if (returned == pdTRUE) return true;
-  LOGE("rawFreeQueue invariant broken");
-  configASSERT(returned == pdTRUE);
-  return false;
-}
-
 // ----------------------------------------------------------------------------
 // STATS
 // ----------------------------------------------------------------------------
@@ -617,6 +609,78 @@ static int16_t pendingBuf[PENDING_MAX_FRAMES * 2];
 static uint32_t pendingCount = 0;
 static uint32_t pendingOldestCapturedMs = 0;
 
+bool returnRawChunkToPool(RawChunk *chunk) {
+  BaseType_t returned = xQueueSend(rawFreeQueue, &chunk, 0);
+  if (returned == pdTRUE) return true;
+  LOGE("rawFreeQueue invariant broken");
+  configASSERT(returned == pdTRUE);
+  return false;
+}
+
+void appendResampledChunk(const RawChunk &chunk) {
+  static int16_t resampledScratch[8192];
+
+  uint32_t inFrames = chunk.len / (2 * sizeof(int16_t));
+  const int16_t *inSamples = (const int16_t *)chunk.data;
+
+  if (pendingCount == 0) pendingOldestCapturedMs = chunk.captured_ms;
+
+  uint32_t produced = resampler.process(
+    inSamples, inFrames,
+    resampledScratch,
+    sizeof(resampledScratch) / (2 * sizeof(int16_t))
+  );
+
+  for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
+    pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
+    pendingBuf[pendingCount * 2 + 1] = resampledScratch[i * 2 + 1];
+    pendingCount++;
+  }
+}
+
+void drainPendingFrames() {
+  while (pendingCount >= OPUS_FRAME_SAMPLES) {
+    OpusPacket pkt;
+    pkt.captured_ms = pendingOldestCapturedMs;
+
+    if (masterVolume < 100) {
+      for (uint32_t i = 0; i < OPUS_FRAME_SAMPLES * CHANNELS; ++i) {
+        pendingBuf[i] = (int16_t)((int32_t)pendingBuf[i] * masterVolume / 100);
+      }
+    }
+
+    // Send to local DAC (if not muted). Bounded wait: a stalled or slow
+    // local DAC must never be able to block Opus encoding / streaming to
+    // remote players, which happens right after this in the same task.
+    if (!masterMuted) {
+      size_t bytes_written = 0;
+      esp_err_t werr = i2s_write(I2S_PORT_OUT, pendingBuf,
+                                  OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t),
+                                  &bytes_written, pdMS_TO_TICKS(LOCAL_DAC_WRITE_TIMEOUT_MS));
+      if (werr != ESP_OK || bytes_written == 0) {
+        statLocalDacStalls++;
+      }
+    }
+
+    int nbytes = opus_encode(opusEncoder, pendingBuf, OPUS_FRAME_SAMPLES, pkt.data, OPUS_MAX_PACKET_BYTES);
+    if (nbytes < 0) {
+      LOGE("opus_encode() failed, error code %d", nbytes);
+    } else {
+      pkt.len = nbytes;
+      if (xQueueSend(opusQueue, &pkt, 0) != pdTRUE) {
+        statOpusDropped++;
+      } else {
+        statOpusEncoded++;
+      }
+    }
+
+    uint32_t remaining = pendingCount - OPUS_FRAME_SAMPLES;
+    memmove(pendingBuf, pendingBuf + OPUS_FRAME_SAMPLES * 2, remaining * 2 * sizeof(int16_t));
+    pendingCount = remaining;
+    pendingOldestCapturedMs += 20;
+  }
+}
+
 // ============================================================================
 // BRIDGE HELPERS
 // ============================================================================
@@ -774,72 +838,15 @@ void i2sReadTask(void *param) {
 /** Converts raw PCM to Opus by resampling and frame encoding. */
 void audioProcessingTask(void *param) {
   LOGI("audioProcessingTask started on core %d", xPortGetCoreID());
-  static int16_t resampledScratch[8192];
   RawChunk *chunk = nullptr;
 
   for (;;) {
     if (xQueueReceive(rawQueue, &chunk, portMAX_DELAY) != pdTRUE) continue;
     if (!chunk) continue;
 
-    uint32_t inFrames = chunk->len / (2 * sizeof(int16_t));
-    const int16_t *inSamples = (const int16_t *)chunk->data;
-
-    if (pendingCount == 0) pendingOldestCapturedMs = chunk->captured_ms;
-
-    uint32_t produced = resampler.process(
-      inSamples, inFrames,
-      resampledScratch,
-      sizeof(resampledScratch) / (2 * sizeof(int16_t))
-    );
-
-    for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
-      pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
-      pendingBuf[pendingCount * 2 + 1] = resampledScratch[i * 2 + 1];
-      pendingCount++;
-    }
-
-    while (pendingCount >= OPUS_FRAME_SAMPLES) {
-      OpusPacket pkt;
-      pkt.captured_ms = pendingOldestCapturedMs;
-
-      if (masterVolume < 100) {
-        for (uint32_t i = 0; i < OPUS_FRAME_SAMPLES * CHANNELS; ++i) {
-          pendingBuf[i] = (int16_t)((int32_t)pendingBuf[i] * masterVolume / 100);
-        }
-      }
-
-      // Send to local DAC (if not muted). Bounded wait: a stalled or slow
-      // local DAC must never be able to block Opus encoding / streaming to
-      // remote players, which happens right after this in the same task.
-      if (!masterMuted) {
-        size_t bytes_written = 0;
-        esp_err_t werr = i2s_write(I2S_PORT_OUT, pendingBuf,
-                                    OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t),
-                                    &bytes_written, pdMS_TO_TICKS(LOCAL_DAC_WRITE_TIMEOUT_MS));
-        if (werr != ESP_OK || bytes_written == 0) {
-          statLocalDacStalls++;
-        }
-      }
-
-      int nbytes = opus_encode(opusEncoder, pendingBuf, OPUS_FRAME_SAMPLES, pkt.data, OPUS_MAX_PACKET_BYTES);
-      if (nbytes < 0) {
-        LOGE("opus_encode() failed, error code %d", nbytes);
-      } else {
-        pkt.len = nbytes;
-        if (xQueueSend(opusQueue, &pkt, 0) != pdTRUE) {
-          statOpusDropped++;
-        } else {
-          statOpusEncoded++;
-        }
-      }
-
-      uint32_t remaining = pendingCount - OPUS_FRAME_SAMPLES;
-      memmove(pendingBuf, pendingBuf + OPUS_FRAME_SAMPLES * 2, remaining * 2 * sizeof(int16_t));
-      pendingCount = remaining;
-      pendingOldestCapturedMs += 20;
-    }
-
+    appendResampledChunk(*chunk);
     returnRawChunkToPool(chunk);
+    drainPendingFrames();
   }
 }
 
