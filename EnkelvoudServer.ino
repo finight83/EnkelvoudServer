@@ -1383,6 +1383,12 @@ void setup_queues_and_tasks() {
     RawChunk *chunk = &rawChunkPool[i];
     if (xQueueSend(rawFreeQueue, &chunk, 0) != pdTRUE) {
       LOGE("Failed to seed raw chunk pool");
+      vQueueDelete(rawQueue);
+      vQueueDelete(rawFreeQueue);
+      vQueueDelete(opusQueue);
+      rawQueue = nullptr;
+      rawFreeQueue = nullptr;
+      opusQueue = nullptr;
       return;
     }
   }
