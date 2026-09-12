@@ -125,6 +125,7 @@ const char *RECEIVER_TOKEN = ""; // set if receiver CONTROL_TOKEN is enabled
 #define OPUS_MAX_PACKET_BYTES 1500
 #define OGG_TEST_PACKET_COUNT 150
 #define OGG_TEST_MAX_PACKET_BYTES 256
+#define LOCAL_DAC_WRITE_TIMEOUT_MS 2
 
 #define I2S_PORT_IN           I2S_NUM_0
 #define I2S_PORT_OUT          I2S_NUM_1
@@ -151,7 +152,7 @@ Preferences preferences;
 // ----------------------------------------------------------------------------
 /** Raw I2S PCM chunk produced by i2sReadTask and consumed by audioProcessingTask. */
 struct RawChunk {
-  uint8_t *data;
+  uint8_t data[I2S_READ_CHUNK_BYTES];
   uint32_t len;
   uint32_t captured_ms;
 };
@@ -742,20 +743,12 @@ void i2sReadTask(void *param) {
     statI2sBytesIn += bytesRead;
     statI2sBytesTotal += bytesRead;
 
-    uint8_t *copy = (uint8_t *)malloc(bytesRead);
-    if (!copy) {
-      statRawDropped++;
-      continue;
-    }
-    memcpy(copy, i2sBuf, bytesRead);
-
     RawChunk chunk;
-    chunk.data = copy;
+    memcpy(chunk.data, i2sBuf, bytesRead);
     chunk.len = bytesRead;
     chunk.captured_ms = millis();
 
     if (xQueueSend(rawQueue, &chunk, 0) != pdTRUE) {
-      free(copy);
       statRawDropped++;
     }
   }
@@ -781,8 +774,6 @@ void audioProcessingTask(void *param) {
       sizeof(resampledScratch) / (2 * sizeof(int16_t))
     );
 
-    free(chunk.data);
-
     for (uint32_t i = 0; i < produced && pendingCount < PENDING_MAX_FRAMES; i++) {
       pendingBuf[pendingCount * 2 + 0] = resampledScratch[i * 2 + 0];
       pendingBuf[pendingCount * 2 + 1] = resampledScratch[i * 2 + 1];
@@ -806,7 +797,7 @@ void audioProcessingTask(void *param) {
         size_t bytes_written = 0;
         esp_err_t werr = i2s_write(I2S_PORT_OUT, pendingBuf,
                                     OPUS_FRAME_SAMPLES * CHANNELS * sizeof(int16_t),
-                                    &bytes_written, pdMS_TO_TICKS(15));
+                                    &bytes_written, pdMS_TO_TICKS(LOCAL_DAC_WRITE_TIMEOUT_MS));
         if (werr != ESP_OK || bytes_written == 0) {
           statLocalDacStalls++;
         }
@@ -936,13 +927,19 @@ void handleApiStatus(AsyncWebServerRequest *request) {
   json += "\"latencyAdjustmentMs\":" + String(latencyAdjustmentMs) + ",";
   json += "\"audioBufferMs\":" + String(audioBufferMs) + ",";
   json += "\"wsClients\":" + String(wsClientCount) + ",";
+  json += "\"rawQueueDepth\":" + String(rawQueue ? uxQueueMessagesWaiting(rawQueue) : 0) + ",";
+  json += "\"opusQueueDepth\":" + String(opusQueue ? uxQueueMessagesWaiting(opusQueue) : 0) + ",";
   json += "\"i2sBytesIn\":" + String(statI2sBytesIn) + ",";
   json += "\"i2sReadErrors\":" + String(statI2sReadErrors) + ",";
+  json += "\"localDacStalls\":" + String(statLocalDacStalls) + ",";
   json += "\"rawDropped\":" + String(statRawDropped) + ",";
   json += "\"opusEncoded\":" + String(statOpusEncoded) + ",";
   json += "\"opusDropped\":" + String(statOpusDropped) + ",";
   json += "\"wsPacketsSent\":" + String(statWsPacketsSent) + ",";
   json += "\"wsBytesSent\":" + String(statWsBytesSent) + ",";
+  json += "\"wsBackpressured\":" + String(statWsClientsBackpressured) + ",";
+  json += "\"freeHeap\":" + String(ESP.getFreeHeap()) + ",";
+  json += "\"minFreeHeap\":" + String(ESP.getMinFreeHeap()) + ",";
   json += "\"streaming\":{\"i2sBytesLast5s\":" + String(statI2sBytesLast5s) + ",";
   json += "\"i2sBytesTotal\":" + String((uint32_t)statI2sBytesTotal) + ",";
   json += "\"rawDroppedLast5s\":" + String(statRawDroppedLast5s) + ",";
@@ -1473,6 +1470,9 @@ void loop() {
          wifiUp ? "CONNECTED" : (accessPointActive ? "AP MODE" : "DISCONNECTED"), WiFi.RSSI());
     LOGI("Device IP addr     : %s  | Gateway: %s", devIp.toString().c_str(), devGateway.toString().c_str());
     LOGI("WebSocket URL      : ws://%s/audio", devIp.toString().c_str());
+    LOGI("Queue depth        : raw=%u/%u  opus=%u/%u",
+             rawQueue ? (unsigned)uxQueueMessagesWaiting(rawQueue) : 0U, RAW_QUEUE_LEN,
+             opusQueue ? (unsigned)uxQueueMessagesWaiting(opusQueue) : 0U, OPUS_QUEUE_LEN);
     LOGI("I2S bytes in       : %u  | read errors: %u  | local DAC stalls: %u", statI2sBytesIn, statI2sReadErrors, statLocalDacStalls);
     LOGI("WS backpressured   : %u packets skipped total for slow clients", statWsClientsBackpressured);
     LOGI("Raw chunks dropped : %u", rawDroppedDelta);
@@ -1481,7 +1481,7 @@ void loop() {
     LOGI("WS packets sent    : %u  | bytes: %u (%.1f kbps)", statWsPacketsSent, statWsBytesSent, kbps);
     LOGI("Avg latency (capture->send): %.1f ms", avgLatency);
     LOGI("Bridge -> host:%s code:%u src:%s", RECEIVER_HOST, lastBridgeHttpCode, lastReceiverSource.c_str());
-    LOGI("Free heap          : %u bytes", ESP.getFreeHeap());
+    LOGI("Free heap          : %u bytes (min: %u)", ESP.getFreeHeap(), ESP.getMinFreeHeap());
     LOGI("---------------------------------------------------------");
 
     statI2sBytesLast5s = statI2sBytesIn;
