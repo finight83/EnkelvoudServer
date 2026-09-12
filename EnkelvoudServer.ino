@@ -790,8 +790,6 @@ void audioProcessingTask(void *param) {
       pendingCount++;
     }
 
-    xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
-
     while (pendingCount >= OPUS_FRAME_SAMPLES) {
       OpusPacket pkt;
       pkt.captured_ms = pendingOldestCapturedMs;
@@ -832,6 +830,8 @@ void audioProcessingTask(void *param) {
       pendingCount = remaining;
       pendingOldestCapturedMs += 20;
     }
+
+    xQueueSend(rawFreeQueue, &chunk, portMAX_DELAY);
   }
 }
 
