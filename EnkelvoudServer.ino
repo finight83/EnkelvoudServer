@@ -36,7 +36,7 @@ static const char *SETTINGS_VERSION = "v2.0.7";
       Cross-task helpers. PrefsGuard RAII for the NVS mutex; lockFor/
       unlockFor; find/prune/snapshot for the subscriber table and player
       list; String escaping (jsonEscape, htmlEscape, sanitizeServerName);
-      effectiveNodeBufferMs() (bounded buffer that gets sent on the wire).
+      audioBufferMs (the configured buffer sent to nodes).
       Also forward-declares the OTA flags so EVDWiFi.h can gate on them
       before EVDOTA.h is reached.
 
@@ -103,9 +103,8 @@ static const char *SETTINGS_VERSION = "v2.0.7";
   EVDPlayers.h
       Player registration + heartbeat (handlePlayerRegistration), receiver
       UART link parser (handleReceiverLink), setReceiverSource /
-      bridgeSendReceiverCmd, per-node perf (updateNodePerf), the per-node
-      rebuffer tracker, serviceAdaptivePlayoutBuffer (global + per-node
-      buffer offset engine), sendZoneConfigToIp, broadcastNodeConfig, and
+      bridgeSendReceiverCmd, per-node perf (updateNodePerf),
+      sendZoneConfigToIp, broadcastNodeConfig, and
       the /api/config | /api/source | /api/cmd | /api/audio/encoding*
       handlers. Also defines handleNodeStats (/api/node_stats) and
       handleOtaResult (/api/player/ota_result). Calls dlnaStopFetch() at

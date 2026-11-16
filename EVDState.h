@@ -56,7 +56,7 @@ volatile uint16_t audioBufferMs        = 0;
 //   * POST {mode:"movie"} installed audioBufferMs = 80, but
 //   * POST {audioBufferMs:80} was rejected as invalid, and
 //   * dragging the dashboard slider to 50 produced a 400 error.
-// 30 is a strict lower bound enforced at every entry point. The per-mode
+// 20 is a strict lower bound enforced at every entry point. The per-mode
 // default presets are 120 / 150 / 80 (off / music / movie), all well above
 // it; the dashboard slider's min attribute must be pinned to
 // AUDIO_BUFFER_MIN_MS so a drag cannot produce a 400 on /api/config.
@@ -66,33 +66,6 @@ volatile uint16_t audioBufferMs        = 0;
 // EVDCTRL_GZ.h with gen_gz.py / gen_gz.bat.
 #define AUDIO_BUFFER_MIN_MS 20
 #define AUDIO_BUFFER_MAX_MS 400
-
-// [adaptive-playout-offset]
-// PC-source BT adds ~30 ms of server->node latency versus phone-source BT,
-// because the PC's own background WiFi traffic competes with the audio
-// multicast on the same channel. With audioBufferMs at 160 ms that drops
-// node headroom to 8-11 ms and .211/.212 begin stuttering. A phone source
-// at the same 160 ms sits at 42 ms headroom and stays clean.
-//
-// serviceAdaptivePlayoutBuffer() (EVDPlayers.h) raises this offset when
-// observed node latency exceeds 70 ms or a rebuffer occurs. The three
-// senders of bufferMs (broadcastNodeConfig, handlePlayerRegistration,
-// sendZoneConfigToIp) all use effectiveNodeBufferMs() below, so the
-// user's dashboard setting is never modified — the offset is applied only
-// on the wire. 0 = phone-grade, no correction.
-volatile int16_t g_adaptiveBufferOffset = 0;
-
-// [effective-buffer-helper]
-// The one true buffer value that should reach the wire. Bounded to the
-// same AUDIO_BUFFER_MIN_MS..MAX_MS range the dashboard slider enforces,
-// so a corruption in g_adaptiveBufferOffset can never produce an
-// out-of-range bufferMs in ctrl packets.
-inline uint16_t effectiveNodeBufferMs() {
-  int32_t v = (int32_t)audioBufferMs + (int32_t)g_adaptiveBufferOffset;
-  if (v < AUDIO_BUFFER_MIN_MS) v = AUDIO_BUFFER_MIN_MS;
-  if (v > AUDIO_BUFFER_MAX_MS) v = AUDIO_BUFFER_MAX_MS;
-  return (uint16_t)v;
-}
 
 // [cross-core-string-fix] CRIT-1: playbackMode / defaultBootSource were
 // String objects shared between Core 0 (AsyncTCP config handlers) and
@@ -565,9 +538,6 @@ SemaphoreHandle_t logTailMutex = nullptr;   // guards /api/log/tail static snap
 // otaMutex used to be defined `static` in EVDOTA.h and lazily created inside
 // handleOtaPlan(). Declared here and created in createSyncPrimitives() like
 // every other mutex.
-// [rebuffer-tracker-lock] Guards g_rebufferTrackers / g_rebufferTrackerCount
-// in EVDPlayers.h. Created in createSyncPrimitives().
-SemaphoreHandle_t g_rebufferMutex = nullptr;
 // [ota-mutex-single-tu] See the block comment above.
 SemaphoreHandle_t otaMutex        = nullptr;
 

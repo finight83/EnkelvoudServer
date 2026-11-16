@@ -498,7 +498,6 @@ void loop() {
   otaCheckStuckJob();   // [ota-stuck-job-loop-watchdog]
   serviceVolumePot();
   handleDiscoveryPacket();
-  serviceAdaptivePlayoutBuffer();   // [adaptive-playout-buffer]
 
   unsigned long now = millis();
 

@@ -1,7 +1,7 @@
 #pragma once
 // ============================================================================
 //  EVDPlayers.h - Player registration, receiver link, per-node perf,
-//                 adaptive buffer engine, /api/config|source|cmd
+//                 /api/config|source|cmd
 // ============================================================================
 #include "EVDHelpers.h"
 #include "EVDUsb.h"
@@ -12,150 +12,6 @@
 // compile without creating a circular include.
 extern volatile bool otaUploadInProgress;
 extern volatile bool otaInProgress;
-
-// [per-node-rebuffer-tracker]
-// NodePerf only carries the latest cumulative rebuffer count, so it cannot
-// tell us whether .212's 12 rebuffers happened in this minute or 10 minutes
-// ago. This small parallel table remembers the millis() at which each node's
-// cumulative counter last increased. Updated from updateNodePerf(), read by
-// effectiveNodeBufferMsForIp(). Keyed by IP string — O(N) linear scan, N ≤ 16,
-// only invoked once per node_stats POST and once per broadcastNodeConfig().
-// Confined to EVDPlayers.h so EnkelvoudServer.ino's NodePerf struct does not
-// need to change.
-#define EVD_PER_NODE_TRACKER_LEN 16
-struct PerNodeRebufferTracker {
-  String        ip;
-  uint16_t      lastCount;
-  unsigned long lastIncreaseMs;
-  unsigned long lastTouchMs;   // [lru] for eviction
-};
-static PerNodeRebufferTracker g_rebufferTrackers[EVD_PER_NODE_TRACKER_LEN];
-static int    g_rebufferTrackerCount = 0;
-static volatile bool g_perNodeBufferDirty = false;
-// g_rebufferMutex declared in EVDState.h, created in createSyncPrimitives().
-
-inline void updateRebufferTracker(const String &ip, uint16_t count,
-                                  unsigned long now) {
-  if (!g_rebufferMutex) return;
-  if (xSemaphoreTake(g_rebufferMutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
-  for (int i = 0; i < g_rebufferTrackerCount; i++) {
-    if (g_rebufferTrackers[i].ip == ip) {
-      if (count > g_rebufferTrackers[i].lastCount) {
-        g_rebufferTrackers[i].lastIncreaseMs = now;
-        g_perNodeBufferDirty                 = true;
-      }
-      g_rebufferTrackers[i].lastCount  = count;
-      g_rebufferTrackers[i].lastTouchMs = now;
-      xSemaphoreGive(g_rebufferMutex);
-      return;
-    }
-  }
-  if (g_rebufferTrackerCount < EVD_PER_NODE_TRACKER_LEN) {
-    int i = g_rebufferTrackerCount++;
-    g_rebufferTrackers[i].ip             = ip;
-    g_rebufferTrackers[i].lastCount      = count;
-    g_rebufferTrackers[i].lastIncreaseMs = (count > 0) ? now : 0;
-    g_rebufferTrackers[i].lastTouchMs    = now;
-    if (count > 0) g_perNodeBufferDirty  = true;
-    xSemaphoreGive(g_rebufferMutex);
-    return;
-  }
-  // [lru-evict] Table full — replace the least-recently-touched slot so the
-  // per-node buffer booster stays functional after 16 unique node IPs have
-  // ever reported (previously the mechanism went permanently dead).
-  int lru = 0;
-  for (int i = 1; i < EVD_PER_NODE_TRACKER_LEN; i++) {
-    if (g_rebufferTrackers[i].lastTouchMs < g_rebufferTrackers[lru].lastTouchMs)
-      lru = i;
-  }
-  g_rebufferTrackers[lru].ip             = ip;
-  g_rebufferTrackers[lru].lastCount      = count;
-  g_rebufferTrackers[lru].lastIncreaseMs = (count > 0) ? now : 0;
-  g_rebufferTrackers[lru].lastTouchMs    = now;
-  if (count > 0) g_perNodeBufferDirty    = true;
-  xSemaphoreGive(g_rebufferMutex);
-}
-
-inline unsigned long lastRebufferMsForIp(const String &ip) {
-  if (!g_rebufferMutex) return 0;
-  if (xSemaphoreTake(g_rebufferMutex, pdMS_TO_TICKS(20)) != pdTRUE) return 0;
-  unsigned long result = 0;
-  for (int i = 0; i < g_rebufferTrackerCount; i++) {
-    if (g_rebufferTrackers[i].ip == ip) {
-      result = g_rebufferTrackers[i].lastIncreaseMs;
-      break;
-    }
-  }
-  xSemaphoreGive(g_rebufferMutex);
-  return result;
-}
-
-// [effective-node-buffer-per-ip]
-// Same role as effectiveNodeBufferMs() but resolves the FINAL wire value for
-// a specific subscriber. Base = user slider + g_adaptiveBufferOffset (global
-// adaptive). Then a per-node boost is added only when the node's own recent
-// history says it cannot keep up at the shared setting:
-//   rebuffered in last 120 s              : +40 ms
-//   latencyMs >= 100                      : +40 ms
-//   latencyMs >=  80                      : +20 ms
-// Capped at +80 ms so a single misbehaving node can never push past 240 ms
-// on a user setting of 160 ms (still inside AUDIO_BUFFER_MAX_MS = 300).
-// A node that has never rebuffered and has latency < 80 gets 0, so .210 and
-// .211 stay at the global value while .212 gets +40 after its first rebuffer.
-inline uint16_t effectiveNodeBufferMsForIp(const String &ip) {
-  int32_t perNodeOffset = 0;
-  if (lockFor(perfMutex, 40)) {
-    for (auto &p : nodePerf) {
-      if (p.ip == ip && p.hasData) {
-        // [per-node-latency-tiered-boost]
-        // Was: +40 at >= 100, +20 at >= 80, hard floor. The 2026-11-15
-        // node diagnostic shows latency sawtoothing 250 -> 375 ms with a
-        // ~55 s period (WiFi background scan: radio off ~110 ms, packets
-        // queue at the AP, arrive in a burst; pkt/s and gap stay normal,
-        // only the deadline margin collapses). The old +40 boost was
-        // already applied at that baseline, giving a target of ~250 ms,
-        // which the 375 ms peak exceeded by 125 ms -> one discard+conceal
-        // per second during each spike. Graduated tiers up to +180 ms
-        // let the target rise to ~390 ms at the peak (head ~+15..+40 ms),
-        // eliminating the per-spike discard burst entirely.
-        if      (p.latencyMs >= 350) perNodeOffset += 180;
-        else if (p.latencyMs >= 300) perNodeOffset += 160;
-        else if (p.latencyMs >= 250) perNodeOffset += 140;
-        else if (p.latencyMs >= 200) perNodeOffset += 110;
-        else if (p.latencyMs >= 150) perNodeOffset +=  80;
-        else if (p.latencyMs >= 100) perNodeOffset +=  50;
-        else if (p.latencyMs >=  80) perNodeOffset +=  25;
-        break;
-      }
-    }
-    unlockFor(perfMutex);
-  }
-  unsigned long lastRb = lastRebufferMsForIp(ip);
-  if (lastRb != 0 && (millis() - lastRb) < 120000UL) perNodeOffset += 40;
-  // [per-node-cap-120] Raised from 80 to 120. The old cap meant
-  // audioBufferMs(200) + g_adaptiveBufferOffset(80) + perNodeOffset(80) =
-  // 360 was silently clamped to AUDIO_BUFFER_MAX_MS at the consumer, so
-  // the per-node boost could not take full effect even when its own
-  // thresholds fired. With AUDIO_BUFFER_MAX_MS now 400 and the global
-  // offset able to reach 100, the aggregate 200+100+120 = 420 is
-  // clamped once, at the consumer, to 400 -- visibly at the edge of
-  // the range where the operator can see the cap was applied.
-  // [per-node-cap-raised-to-220]
-  // Was 120. The old comment described a 200+100+120=420 aggregate that
-  // was already clamped at AUDIO_BUFFER_MAX_MS, so the 120 cap was dead
-  // code (max real sum was +80). With the tiered latency boost above
-  // reaching +180, +220 is now the active ceiling. AUDIO_BUFFER_MAX_MS
-  // (400 ms, per the consumer's clamp) remains the hard limit: at
-  // audioBufferMs(200)+g_adaptiveBufferOffset(50)+perNodeOffset(180)=430
-  // the consumer clamps to 400 and head ~= +40 ms at the 360 ms peak.
-  if (perNodeOffset > 220) perNodeOffset = 220;
-
-  int32_t v = (int32_t)audioBufferMs + (int32_t)g_adaptiveBufferOffset
-              + perNodeOffset;
-  if (v < AUDIO_BUFFER_MIN_MS) v = AUDIO_BUFFER_MIN_MS;
-  if (v > AUDIO_BUFFER_MAX_MS) v = AUDIO_BUFFER_MAX_MS;
-  return (uint16_t)v;
-}
 
 // ---- Receiver (upstream BT/aux module over UART) ---------------------------
 inline void setupReceiverLink() {
@@ -510,7 +366,7 @@ inline void handlePlayerRegistration(AsyncWebServerRequest *request, uint8_t *da
                   ",\"muted\":" + String(masterMuted ? "true" : "false") +
                   ",\"zoneVolume\":" + String((float)zvol / 100.0f, 3) +
                   ",\"zoneMuted\":" + String(zmute ? "true" : "false") +
-                  ",\"bufferMs\":" + String(effectiveNodeBufferMsForIp(ip)) +
+                  ",\"bufferMs\":" + String(audioBufferMs) +
                   ",\"sourceSampleRate\":" + String((unsigned)g_sourceSampleRate) +
                   // [opus-sample-rate] Node must re-create its decoder if
                   // this differs from its current decoder Fs.
@@ -603,7 +459,7 @@ inline void handlePlayerRegistration(AsyncWebServerRequest *request, uint8_t *da
                     ",\"audioCompatReason\":\"" + decision.reason + "\"" +
                     ",\"epoch\":" + String(serverEpoch) +
                     ",\"clockSyncPort\":" + String(CLOCK_SYNC_UDP_PORT) +
-                    ",\"bufferMs\":" + String(effectiveNodeBufferMsForIp(ip)) +
+                    ",\"bufferMs\":" + String(audioBufferMs) +
                     ",\"sourceSampleRate\":" + String((unsigned)g_sourceSampleRate) +
                     // [opus-sample-rate] Same field on every heartbeat so a
                     // node that missed the ctrl push self-heals within one
@@ -771,7 +627,7 @@ inline void sendZoneConfigToIp(const String &ip, int zvol, bool zmute) {
                 ",\"zoneMuted\":"  + String(zmute ? "true" : "false") +
                 ",\"sourceSampleRate\":" + String((unsigned)g_sourceSampleRate) +
                 ",\"opusSampleRate\":"   + String((unsigned)g_opusSampleRate) +
-                ",\"bufferMs\":"         + String(effectiveNodeBufferMsForIp(ip)) +
+                ",\"bufferMs\":"         + String(audioBufferMs) +
                 ",\"mode\":\""           + String(playbackModeCStr()) + "\"" +
                 ",\"epoch\":"            + String(serverEpoch) +
                 ",\"clockSyncPort\":"    + String(CLOCK_SYNC_UDP_PORT);
@@ -831,7 +687,7 @@ inline void broadcastNodeConfig() {
                   ",\"muted\":"     + String(masterMuted ? "true" : "false") +
                   ",\"zoneVolume\":" + String((float)zvol / 100.0f, 3) +
                   ",\"zoneMuted\":"  + String(zmute ? "true" : "false") +
-                  ",\"bufferMs\":"   + String(effectiveNodeBufferMsForIp(s.ip)) +
+                  ",\"bufferMs\":"   + String(audioBufferMs) +
                   ",\"sourceSampleRate\":" + String((unsigned)g_sourceSampleRate) +
                   // [opus-sample-rate] Node re-creates decoder when this
                   // differs from its current decoder Fs.
@@ -866,19 +722,7 @@ inline void broadcastNodeConfig() {
 // push removes one subsMutex acquisition, one per-subscriber JSON build,
 // and one UDP send from every 5 s tick of loop().
 
-// ---- Node perf + adaptive buffers ------------------------------------------
-// [node-perf-restored] This definition was accidentally dropped when the
-// pipeline-floor patch was applied to serviceAdaptivePlayoutBuffer(). The
-// forward declaration in EnkelvoudServer.ino still exists (it is what
-// handleNodeStats() binds to), so the header still compiles cleanly — the
-// symbol was only missing at LINK time.
-//
-// updateNodePerf() populates nodePerf[] from each /api/node_stats POST.
-// serviceAdaptivePlayoutBuffer() reads the fleet-max latencyMs from that
-// table to compute the required buffer floor (latMax + 80 ms). Without a
-// working updateNodePerf(), nodePerf[] stays empty forever, the floor
-// collapses to 0, and the fleet drops back to the exact bug the pipeline-
-// floor patch was written to fix.
+// ---- Node performance diagnostics ------------------------------------------
 inline void updateNodePerf(const String &ip, uint32_t latencyMs, uint32_t queueDepth,
                            uint32_t target, uint16_t rebuffers, unsigned long now) {
   if (!lockFor(perfMutex, 40)) return;
@@ -898,125 +742,6 @@ inline void updateNodePerf(const String &ip, uint32_t latencyMs, uint32_t queueD
   if (!found) nodePerf.push_back({ip, latencyMs, queueDepth, target,
                                   rebuffers, now, true});
   unlockFor(perfMutex);
-  // [per-node-rebuffer-tracker] Advance lastIncreaseMs on cumulative-counter
-  // increases. A node reboot that zeroes its counter is intentionally NOT
-  // treated as an increase — the next real rebuffer after the reset re-arms.
-  updateRebufferTracker(ip, rebuffers, now);
-}
-
-// [adaptive-playout-buffer]
-// PC-source BT adds ~30 ms of latency versus phone-source BT because the
-// PC's background WiFi traffic shares channel 11 with the server->node
-// multicast. Without this function, nodes at the user's 160 ms buffer
-// fall to 8-11 ms headroom and .211/.212 stutter. This function raises
-// g_adaptiveBufferOffset (EVDState.h) when node latency or rebuffers
-// indicate congestion, and lowers it back when conditions improve.
-//
-// The user's audioBufferMs slider value is untouched. Only
-// effectiveNodeBufferMs() is sent over the wire, so the dashboard reflects
-// what the user set, and the offset can be cleared (or the user can lower
-// the slider below the current effective buffer) without fighting state.
-//
-// Runs every 5 s from loop() in EVDMain.h. Reads nodePerf (populated by
-// /api/node_stats POSTs). Hysteresis bands prevent oscillation:
-//   avg < 55, no recent rebuffer  : offset = 0     (phone-grade)
-//   55 <= avg < 70                : deadband       (no change)
-//   70 <= avg < 90                : offset = 20    (mild)
-//   avg >= 90 OR recent rebuffer  : offset = 40    (PC-grade)
-//   avg >= 120 OR >=3 recent rebuf: offset = 80    (heavy)
-//
-// "Recent rebuffer" = total rebuffers increased within the last 30 s,
-// across all nodes. A node reboot that resets its own counter to 0 just
-// makes total drop — no false trigger.
-inline void serviceAdaptivePlayoutBuffer() {
-  static uint32_t lastCheckMs           = 0;
-  static uint32_t lastTotalRebuffers    = 0;
-  static uint32_t lastRebufferDeltaMs   = 0;
-
-  uint32_t now = millis();
-  if (now - lastCheckMs < 5000) return;
-  lastCheckMs = now;
-
-  std::vector<NodePerf> perf = snapshotPerf();
-  if (perf.empty()) return;
-
-  uint32_t latSum = 0, latCount = 0;
-  uint32_t totalRebuffers = 0;
-  uint32_t recentRebufferCount = 0;
-  for (const auto &p : perf) {
-    if (!p.hasData) continue;
-    latSum += p.latencyMs;
-    latCount++;
-    totalRebuffers += p.rebuffers;
-  }
-  if (latCount == 0) return;
-  uint32_t avgLat = latSum / latCount;
-
-  // Track total-rebuffer delta across all nodes. A rising total means at
-  // least one node just rebuffered. Any increase in the last 30 s keeps
-  // the "recent" window warm; a node reboot that zeroes its counter is a
-  // decrease, which resets the window naturally without a false trigger.
-  if (totalRebuffers > lastTotalRebuffers) {
-    recentRebufferCount = totalRebuffers - lastTotalRebuffers;
-    lastRebufferDeltaMs = now;
-  }
-  lastTotalRebuffers = totalRebuffers;
-  bool recentRebuffer = (lastRebufferDeltaMs != 0) &&
-                        (now - lastRebufferDeltaMs < 30000UL);
-
-  // [adaptive-thresholds-recalibrated]
-  // The old tiers required avgLat >= 90 to reach offset 40 and >= 120 to
-  // reach 80. Fleet average on the 2026-11-13 recording was 110.47, so
-  // only the 40 tier ever fired, leaving effective playout at 280 ms
-  // while minLeadMsLastSec was -7 ms -- the buffer engine could see the
-  // starvation but was not configured to compensate for it. New tiers:
-  //   >=115 or (recentRebuffer && >=95)  -> 100
-  //   >= 95                              ->  60
-  //   >= 70                              ->  30
-  //   <  55 and no recent rebuffer       ->   0
-  //   55..69, 70..94 without rebuffer    -> hold (deadband)
-  // Offsets are bounded by AUDIO_BUFFER_MAX_MS at the consumer, so a
-  // misconfigured environment cannot exceed 400 ms on the wire.
-  int16_t desiredOffset;
-  if (avgLat >= 115 || (recentRebuffer && avgLat >= 95)) {
-    desiredOffset = 100;
-  } else if (avgLat >= 95) {
-    desiredOffset = 60;
-  } else if (avgLat >= 70) {
-    desiredOffset = 30;
-  } else if (avgLat < 55 && !recentRebuffer) {
-    desiredOffset = 0;
-  } else {
-    // [adaptive-buffer-decay]
-    // Deadband 55-70 ms: hold current offset, but slowly decay if stable.
-    static uint32_t lastDecayMs = 0;
-    if (now - lastDecayMs > 120000UL && !recentRebuffer) {
-      lastDecayMs = now;
-      desiredOffset = g_adaptiveBufferOffset - 5;
-      if (desiredOffset < 0) desiredOffset = 0;
-    } else {
-      desiredOffset = g_adaptiveBufferOffset;
-    }
-  }
-
-  // [per-node-push] Also fire when the GLOBAL offset did not move but a
-  // specific node's rebuffer counter rose — that node now needs a bigger
-  // bufferMs than its peers, and only the per-node resolver knows it.
-  const bool perNodeDirty = g_perNodeBufferDirty;
-  if (desiredOffset == g_adaptiveBufferOffset && !perNodeDirty) return;
-  if (desiredOffset != g_adaptiveBufferOffset) {
-    g_adaptiveBufferOffset = desiredOffset;
-    LOGI("Adaptive playout: avg latency %u ms, recent rebuffers %u -> "
-         "offset %d ms (effective buffer %u ms, user base %u ms)",
-         avgLat, recentRebufferCount, (int)desiredOffset,
-         (unsigned)effectiveNodeBufferMs(), (unsigned)audioBufferMs);
-  }
-  if (perNodeDirty) {
-    g_perNodeBufferDirty = false;
-    LOGI("Per-node rebuffer detected; pushing per-node bufferMs");
-  }
-
-  broadcastNodeConfig();   // push per-node bufferMs to every subscriber
 }
 
 // ---- HTTP: /api/config, /api/source, /api/cmd ------------------------------
