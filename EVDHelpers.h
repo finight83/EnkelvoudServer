@@ -25,7 +25,6 @@ inline void createSyncPrimitives() {
   if (!prefsMutex)   prefsMutex   = xSemaphoreCreateMutex();
   if (!logTailMutex) logTailMutex = xSemaphoreCreateMutex();
   if (!otaMutex)     otaMutex     = xSemaphoreCreateMutex();   // [ota-mutex-single-tu]
-  if (!g_rebufferMutex) g_rebufferMutex = xSemaphoreCreateMutex();  // [rebuffer-tracker-lock]
 }
 
 // [v1.1.1-prefs-mutex]
@@ -199,16 +198,8 @@ inline std::vector<Zone> snapshotZones() {
 // node that was powered off, unplugged, kicked off Wi-Fi, or removed from
 // every zone would therefore keep its last-reported latency on the Status
 // page indefinitely. /api/stats renders the whole vector with no age check,
-// so the operator sees a stale entry that the adaptive engine has already
-// stopped acting on (updateAdaptiveBuffers() in EVDPlayers.h has its own
-// 20 s freshness gate). The two views have to agree: an entry visible in
-// the Node Latencies list must be an entry the buffer engine can still act
-// on. Prune on every snapshot at exactly that window so they stay in sync.
-//
-// 20 s is chosen to match updateAdaptiveBuffers(), not the 45 s
-// PLAYER_STALE_TIMEOUT_MS used for the player/subscriber tables: the perf
-// table is a real-time signal that feeds control decisions, so it has to
-// go stale before the coarser identity tables do.
+// so the operator sees a stale entry. Prune on every snapshot; these
+// diagnostics expire independently of the player/subscriber tables.
 #define NODE_PERF_STALE_TIMEOUT_MS 20000UL
 
 inline void pruneStalePerfLocked(unsigned long nowMs) {

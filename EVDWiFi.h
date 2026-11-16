@@ -247,8 +247,7 @@ inline void loadWiFiSettings() {
     if (!pg.ok()) {
       LOGW("loadWiFiSettings: prefsMutex busy; using defaults");
       // [nvs-begin-fallthrough] Still apply per-mode defaults so
-      // audioBufferMs is never left at 0. Otherwise nodes get bufferMs=20
-      // (clamped by effectiveNodeBufferMs) and stutter immediately.
+      // audioBufferMs is never left at 0.
       applyModeSettingsToLive((ModeIdx)playbackModeIdx);
       return;
     }

@@ -541,9 +541,9 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         <h2 class="section-title" style="font-size:1rem;margin-bottom:10px;">Stream Telemetry</h2>
         <div class="telemetry-bar">
           <span class="tel-pill"><b id="stat-mode">--</b>mode</span>
-          <span class="tel-pill"><b id="stat-buffer">--</b>buf</span>
-          <span class="tel-pill"><b id="stat-delay">--</b>delay</span>
-          <span class="tel-pill"><b id="stat-latency">--</b>lat</span>
+          <span class="tel-pill" title="Configured playback target sent to nodes"><b id="stat-buffer">--</b>target buffer</span>
+          <span class="tel-pill" title="Legacy field; not applied to playback"><b id="stat-delay">--</b>legacy adjustment</span>
+          <span class="tel-pill" title="Average of node-reported latency; not the configured target or measured playout timing"><b id="stat-latency">--</b>node latency</span>
           <span class="tel-pill"><b id="stat-clients">--</b>clients</span>
           <span class="tel-pill"><b id="stat-master">--</b>master</span>
         </div>
@@ -671,13 +671,14 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         <div class="enc-target-row">
           <span class="enc-label">Buffer (ms)</span>
           <!-- [buffer-latency-floor] min matches AUDIO_BUFFER_MIN_MS (EVDState.h).
-              Values below 30 are rejected by /api/config -> 400. Regenerate
+              Values below 20 are rejected by /api/config -> 400. Regenerate
               EVDCTRL_GZ.h after editing this attribute. -->
           <input type="range" id="buffer-latency" min="20" max="300" step="5" value="150">
           <span class="enc-target-val" id="buffer-latency-val">150 ms</span>
         </div>
         <p class="enc-hint">
-          This is the target playback delay (<code>bufferMs</code>) for the player nodes. 
+          This configured target (<code>bufferMs</code>) is sent to every player.
+          Node-reported latency and actual playout timing are separate measurements.
           Higher values increase resistance to network jitter but increase latency.
         </p>
       </div>
@@ -1229,7 +1230,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
       var nodeHtml = '';
       (s.nodes || []).forEach(function(n){
-        nodeHtml += '<div>' + n.ip + ' — ' + n.latencyMs + ' ms (queue ' + n.queueDepth + '/' + (n.target || '?') + ', rebuffers ' + n.rebuffers + ')</div>';
+        nodeHtml += '<div>' + n.ip + ' — reported latency ' + n.latencyMs + ' ms (queue ' + n.queueDepth + '/' + (n.target || '?') + ', rebuffers ' + n.rebuffers + ')</div>';
       });
       updateText('stat-nodes', nodeHtml || 'No nodes reporting yet');
 
