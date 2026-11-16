@@ -3,6 +3,7 @@
 //  EVDUDP.h - UDP transport: audio multicast, ctrl push, clock sync
 // ============================================================================
 #include "EVDHelpers.h"
+#include "EVDPacer.h"
 #include <esp_timer.h>
 
 // ---- ctrl-send mutex --------------------------------------------------------
@@ -165,12 +166,16 @@ inline void udpSendTask(void *param) {
   };
   static SubEntry snapBuf[MAX_UDP_SUBSCRIBERS];
   bool sendOk[MAX_UDP_SUBSCRIBERS];
+  static AudioFramePacer pacer;
+  static bool hasLastPacerPacket = false;
+  static uint32_t lastPacerPacketMs = 0;
 
   for (;;) {
     g_udpSendLoopCount++;
 
     if (otaPauseAudio) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
     if (xQueueReceive(opusQueue, &pkt, portMAX_DELAY) != pdTRUE) continue;
+    uint32_t packetArrivalMs = millis();
 
     // [udp-stage-afterRecv-pre-mute] Move afterRecv above the mute gate so
     // the counter keeps climbing during a master mute — this proves the
@@ -191,69 +196,40 @@ inline void udpSendTask(void *param) {
       }
     }
 
-    static uint32_t nextSendMs = 0;
-    nowMs = millis();
-    if (nextSendMs == 0) nextSendMs = nowMs;
+    nowMs = packetArrivalMs;
+    bool packetGap = hasLastPacerPacket &&
+        (uint32_t)(nowMs - lastPacerPacketMs) > AUDIO_PACER_MAX_LAG_MS;
+    lastPacerPacketMs = nowMs;
+    hasLastPacerPacket = true;
+    if (!pacer.initialized) pacer.start(nowMs);
 
-    int32_t aheadMs = (int32_t)(nextSendMs - nowMs);
-    if (aheadMs > 100) {
-      LOGE("udpSendTask pacer %ld ms ahead of wall clock; resetting",
-           (long)aheadMs);
-      nextSendMs = nowMs + 20;
-      g_udpSendStallResets++;
-      g_udpPacerAheadReset++;
-    } else if (aheadMs < -100) {
-      nextSendMs = nowMs + 20;
-      g_udpSendStallResets++;
-      g_udpPacerBehindReset++;
-    }
-
-    if (nowMs < nextSendMs) {
-      uint32_t waitMs = nextSendMs - nowMs;
+    int32_t untilMs = pacer.untilMs(nowMs);
+    if (untilMs > 0) {
+      uint32_t waitMs = (uint32_t)untilMs;
       if (waitMs > 100) waitMs = 100;
       vTaskDelay(pdMS_TO_TICKS(waitMs));
     }
 
-    // [pacer-catch-up-short-step]
-    // With many subscribers each send can exceed 20 ms (16 subs × ~1.5 ms
-    // ≈ 24 ms). Advancing nextSendMs by a flat 20 ms let drift accumulate
-    // by ~4-5 ms per frame; after ~20 frames (~500 ms) the >100 ms reset
-    // fired and caught up by BURSTING — client saw periodic 500 ms bursts
-    // and starved in between. Now: if we are behind by 5-20 ms, step by
-    // 15 ms (send slightly fast, catch up smoothly); if 20-100 ms behind,
-    // step by 10 ms. Only a genuinely stuck pacer (>100 ms) hard-resets.
-    //
-    // [pacer-stall-diagnostic]
-    // Every hard reset is now logged with the exact drift, the opusQueue
-    // depth (which shows whether the reset was triggered by an encode
-    // overrun versus an OTA pause), and the running reset count. Rate-
-    // limited to one line every 5 s because LOGE on 115200-baud serial
-    // blocks the sender for ~4.5 ms, and during a pathological burst the
-    // reset can fire several times in a few seconds.
+    // Keep an absolute 20 ms frame schedule. Normal send jitter never shifts
+    // its phase. When queued work is stale, drain it until the schedule is
+    // current rather than transmitting a catch-up burst.
     uint32_t postDelayMs = millis();
-    int32_t driftMs = (int32_t)(postDelayMs - nextSendMs);
-    if (driftMs > 100) {
-      // [pacer-smooth-catchup] Do not hard reset (causes bursts/gaps).
-      // Step by 5ms per frame until caught up.
+    int32_t driftMs = pacer.latenessMs(postDelayMs);
+    uint32_t queuedFrames = opusQueue
+        ? (uint32_t)uxQueueMessagesWaiting(opusQueue) : 0;
+    if (!pacer.prepareFrame(postDelayMs, OPUS_FRAME_MS,
+                            queuedFrames, packetGap)) {
       static uint32_t lastStallLogMs = 0;
       if (millis() - lastStallLogMs > 5000) {
         lastStallLogMs = millis();
-        uint32_t qd = opusQueue ? (uint32_t)uxQueueMessagesWaiting(opusQueue) : 0;
-        LOGW("pacer catching up: drift=%ld ms  opusQ=%u/%d",
-             (long)driftMs, (unsigned)qd, (int)OPUS_QUEUE_LEN);
+        LOGW("pacer dropping stale frame: drift=%ld ms  opusQ=%u/%d",
+             (long)driftMs, (unsigned)queuedFrames, (int)OPUS_QUEUE_LEN);
       }
-      nextSendMs += 5; 
       g_udpSendStallResets++;
       g_udpPacerDriftReset++;
-    } else if (driftMs > 20) {
-      // Behind 20-100 ms — walk forward 10 ms per frame.
-      nextSendMs += 10;
-    } else if (driftMs > 5) {
-      // Behind 5-20 ms — walk forward 15 ms per frame.
-      nextSendMs += 15;
-    } else {
-      // On schedule or slightly ahead.
-      nextSendMs += 20;
+      g_udpPacerBehindReset++;
+      statOpusDropped++;
+      continue;
     }
 
     uint16_t magic = AUDIO_PROTO_MAGIC;
@@ -535,6 +511,11 @@ inline bool syncRateAllow(uint32_t ipKey, uint32_t nowMs) {
 inline void handleClockSyncRequests() {
   int sz = clockSyncUdp.parsePacket();
   if (sz <= 0) return;
+  // Timestamp receipt before reading/deserializing the payload. Recording it
+  // after JSON parsing makes processing time part of the server-side clock
+  // offset and biases the RTT exchange asymmetrically.
+  const uint32_t serverRxMs =
+      (uint32_t)(esp_timer_get_time() / 1000ULL);
 
   uint8_t buf[160];
   int n = clockSyncUdp.read(buf, sizeof(buf) - 1);
@@ -562,19 +543,16 @@ inline void handleClockSyncRequests() {
   }
 
   uint32_t clientTxMs = (uint32_t)(in["clientTxMs"] | 0UL);
-  // millis() has 1 ms tick granularity and is read from an arbitrary point
-  // in loop(), which was already the single largest contributor to RTT
-  // jitter on the server side. esp_timer_get_time() is sub-microsecond and
-  // works on both cores without a lock.
-  uint32_t serverRxMs = (uint32_t)(esp_timer_get_time() / 1000ULL);
-
   char out[160];
+  // Stamp transmit as late as possible before handing the datagram to lwIP.
+  const uint32_t serverTxMs =
+      (uint32_t)(esp_timer_get_time() / 1000ULL);
   int len = snprintf(out, sizeof(out),
       "{\"type\":\"sync_resp\",\"protoVersion\":%d,\"epoch\":%lu,"
       "\"clientTxMs\":%lu,\"serverRxMs\":%lu,\"serverTxMs\":%lu}",
       AUDIO_PROTO_VERSION, (unsigned long)serverEpoch,
       (unsigned long)clientTxMs, (unsigned long)serverRxMs,
-      (unsigned long)(esp_timer_get_time() / 1000ULL));
+      (unsigned long)serverTxMs);
   if (len <= 0 || len >= (int)sizeof(out)) { statSyncRequestErrors++; return; }
 
   if (clockSyncUdp.beginPacket(remote, remotePort)) {

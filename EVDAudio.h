@@ -72,89 +72,11 @@ public:
       _haveHistory = true;
     }
 
-    // [ratio-1-fast-path]
-    // When the ratio is 1.0 the cubic Hermite basis collapses to identity
-    // (t == 0 → am = a1 = a2 = 0, a0 = 1, output == p0 exactly). But the
-    // current code still computes all four basis coefficients and evaluates
-    // the full 8-multiply polynomial per stereo frame — and does so against
-    // a double-precision `_pos`/`_ratio`/`floor()` that is SOFT-FLOAT on the
-    // ESP32-S3 (hardware FPU is single-precision only). That is ~5 double
-    // ops + ~28 float ops per output frame wasted.
-    //
-    // This fast path is the single biggest CPU win in the audio pipeline.
-    // The 0.01 % tolerance is ±5 Hz at 48 kHz — well below the pitch
-    // JND — and at that precision the memcpy result differs from the cubic
-    // result by at most one LSB on int16.
-    //
-    // Stage 1's ratio lands in this band whenever the source is properly
-    // clocked (measured input ≈ SOURCE_SAMPLE_RATE), which is the normal
-    // steady state. The dynamic rate estimator only pushes the ratio
-    // outside this band when the I2S clock is genuinely off, which is
-    // exactly when the cubic filter is needed.
-    //
-    // _pos is reset to 0.0 here because we've "consumed" the whole input
-    // buffer in a single pass. If a future call comes in with a non-1.0
-    // ratio, it starts fresh; the boundary sample discontinuity is at most
-    // one sample, inaudible.
-    // [ratio-1-fast-path-narrowed-to-5ppm]
-    // Was ±100 ppm (0.9999..1.0001). A 48 kHz source crystal that
-    // drifts -73 ppm from nominal lands at 47996.5/48000 = 0.999927,
-    // which the old window treated as "identity" and memcpy'd through
-    // without correcting the drift. That drift accumulates on every
-    // node's Opus queue (0.004 frames/sec) which the node's corrector
-    // is supposed to drain — but the corrector is broken by the
-    // `abs(err) <= 2` deadband, so the queue grows from target 6 to
-    // 8-9 and stutters. At 44.1 kHz source the ratio is ~0.919 so the
-    // cubic path runs and pitch drift is corrected server-side — which
-    // is why 44.1 "just works" while 48 stutters.
-    //
-    // Narrowed to ±5 ppm. Any source clock that is not genuinely
-    // identical to the server's crystal (essentially every real
-    // board) now goes through the cubic path and absorbs drift the
-    // same way 44.1 does. Cost: ~0.6 % of Core 1's budget per stage.
-    // Stage 2 (SOURCE→OPUS identity, 48000.0/48000.0 = exactly 1.0)
-    // still hits the fast path because both operands are compile-time
-    // equal ints.
-    // [ratio-1-fast-path-must-have-zero-pos]
-    // The memcpy assumes _pos == 0 (start of input). If a previous slow
-    // call left a fractional position, or if outCapacity < inFrames forces
-    // a partial consume (which leaves _pos = inFrames - n > 0), the next
-    // fast call memcpy'd from in[0] and silently dropped the buffered
-    // samples. Add both guards. Stage 2 (compile-time 1.0) always hits
-    // the fast path because _pos stays exactly 0.0 and inFrames ≤ outCap
-    // in the deployed task sizing — this is a defensive fix, not an
-    // observed failure.
-    // [fast-path-pos-reanchor]
-    // The fast path requires _pos == 0.0, but _pos accumulates a fractional
-    // remainder on EVERY slow-path call. Once ANY slow-path call ran, _pos
-    // was never exactly 0.0 again, and the fast path became unreachable
-    // for the rest of the boot. The estimator drives the ratio into
-    // 20-50 ppm territory (its deadband is 20 ppm, tighter than the 5 ppm
-    // fast-path gate), so in practice the resampler ran full 4-tap cubic
-    // Catmull-Rom on every output sample for the entire uptime.
-    //
-    // Fix: allow a slow-path fractional _pos up to one sample's worth to
-    // round to 0 when entering the fast band. A single-sample timeline
-    // jump at that moment is inaudible (< 0.02 ms) and the resampler
-    // immediately switches to memcpy for subsequent calls.
-    // [fast-path-widen-to-100ppm]
-    // ±5 ppm was a node-side tuning (see the [ratio-1-fast-path-narrowed-
-    // to-5ppm] comment block above). Server-side, the source crystal and
-    // the server crystal independently drift by 20-50 ppm; the estimator
-    // faithfully tracks that drift but ends up writing a ratio OUTSIDE
-    // ±5 ppm on every real deployment — so the resampler ran full cubic
-    // on 100 % of samples even though the pitch error being corrected
-    // was inaudible (<1 cent, i.e. 10x below the pitch JND).
-    //
-    // ±100 ppm covers every production crystal on the planet at every
-    // temperature, plus margin. The residual drift (100 ppm at 48 kHz =
-    // 4.8 samples/sec) accumulates 288 samples in 60 seconds — well
-    // within any node's 120-300 ms playout buffer (5750-14400 samples
-    // at 48 kHz), absorbed by the node corrector without rebuffering.
-    // Node-side drift cleanup is still handled by the node's own RTT
-    // loop, which was always the correct place for it.
-    if (ratio > 0.999900 && ratio < 1.000100 &&
-        _pos > -1.0 && _pos < 1.0 &&
+    // Copy only for exact identity at an exact sample boundary. A fractional
+    // carried position must still be interpolated even when the ratio returns
+    // to 1.0, or re-anchoring here would discard timeline phase.
+    if (ratio == 1.0 &&
+        _pos == 0.0 &&
         inFrames <= outCapacityFrames) {
       memcpy(out, in, inFrames * 2 * sizeof(int16_t));
       _pos = 0.0;   // explicit re-anchor; the guard above accepted |_pos|<1
@@ -649,27 +571,6 @@ if (g_rateEstimatorNeedsReset) {
     double ratioSource = rawRateValid ? rawRate : refRate;
     double targetRatio  = ratioSource / (double)SOURCE_SAMPLE_RATE;
 
-    // [pending-buf-feedback]
-    // The rate estimator alone cannot perfectly track the source crystal;
-    // a tiny 10 ppm mismatch adds 36 ms of latency per hour to pendingBuf.
-    // Add a slow feedback loop: if pendingBuf exceeds its target depth,
-    // slightly speed up the resampler to drain it. A 0.01% pitch shift
-    // is completely inaudible, but permanently fixes latency creep.
-    static double pendingTrim = 1.0;
-    int32_t pendingErr = (int32_t)pendingCount - 960; // target ~20ms
-    if (abs(pendingErr) > 240) { // 5ms deadband to prevent hunting
-        pendingTrim += (pendingErr > 0 ? 0.00005 : -0.00005);
-        if (pendingTrim > 1.002) pendingTrim = 1.002;
-        if (pendingTrim < 0.998) pendingTrim = 0.998;
-    } else {
-        // Inside deadband: slowly return trim to 1.0 so we don't
-        // permanently stretch the pitch.
-        pendingTrim += (1.0 - pendingTrim) * 0.05;
-    }
-    // Apply the trim to the target ratio. If pendingErr > 0, we need to
-    // consume faster, which means a SMALLER ratio (pendingTrim < 1.0).
-    targetRatio *= pendingTrim;
-
     double currentRatio = resampler.ratio();
 
     static uint32_t lastRatioWriteMs = 0;
@@ -876,14 +777,8 @@ inline void applyQuietDynamics(int16_t *buf, uint32_t frames) {
 // source 18-22 kHz folding into 2-6 kHz (mid-range where the ear is most
 // sensitive).
 //
-// Add a 4th-order Butterworth low-pass (two cascaded 2nd-order biquad sections)
-// at 10 kHz in front of Stage 2 when Opus is at 24 kHz. Attenuation:
-//   ~ 14 dB at 15 kHz (folds to 9-10 kHz)
-//   ~ 20 dB at 18 kHz (folds to 6-8 kHz)
-//   ~ 27 dB at 22 kHz (folds to 2-6 kHz)
-// The 10 kHz cutoff leaves only ~1.5 kHz of audible content attenuated and
-// costs ~24 flops per sample, negligible next to the Catmull-Rom math it
-// protects. Bypassed entirely when g_opusSampleRate == 48000: no extra
+// Add a 4th-order low-pass at 10 kHz before Stage 2 when Opus is at 24 kHz.
+// Bypassed when g_opusSampleRate == 48000: no extra
 // latency, no extra CPU, no passband change.
 static FcBiquadState aa24kLpL1, aa24kLpR1, aa24kLpL2, aa24kLpR2;
 static uint32_t     aa24kLastRate = 0;   // 0 forces configure on first call
@@ -898,7 +793,7 @@ inline void serviceAntiAliasFilter() {
     aa24kLpR2.setLowpass(10000.0f, 48000.0f);
     aa24kLpL1.z1 = aa24kLpL1.z2 = aa24kLpR1.z1 = aa24kLpR1.z2 = 0;
     aa24kLpL2.z1 = aa24kLpL2.z2 = aa24kLpR2.z1 = aa24kLpR2.z2 = 0;
-    LOGI("Anti-alias filter enabled (10 kHz LR4) for 24 kHz Opus");
+    LOGI("Anti-alias filter enabled (10 kHz) for 24 kHz Opus");
   } else {
     LOGI("Anti-alias filter disabled (Opus rate %u Hz)",
          (unsigned)g_opusSampleRate);
@@ -1403,6 +1298,9 @@ inline void audioProcessingTask(void *param) {
 
       EncodeFrame ef;
       ef.captured_ms = pendingOldestCapturedMs;
+      // Reserve the wire sequence before enqueueing/encoding so frame drops
+      // in either stage are visible as gaps to players running PLC.
+      ef.seq         = gAudioFrameSeq++;
       ef.samples     = g_opusFrameSamples;
       memcpy(ef.pcm, pendingBuf, g_opusFrameSamples * CHANNELS * sizeof(int16_t));
 
@@ -1543,6 +1441,7 @@ inline void audioEncodeTask(void *param) {
     }
 
     pkt.captured_ms = ef.captured_ms;
+    pkt.seq         = ef.seq;
 
     uint32_t t0 = micros();
     int nbytes = opus_encode(opusEncoder, ef.pcm, ef.samples,
@@ -1597,7 +1496,6 @@ inline void audioEncodeTask(void *param) {
       statOpusDropped++;
     } else {
       pkt.len = nbytes;
-      pkt.seq = gAudioFrameSeq++;
       if (xQueueSend(opusQueue, &pkt, 0) != pdTRUE) statOpusDropped++;
       else                                         statOpusEncoded++;
     }

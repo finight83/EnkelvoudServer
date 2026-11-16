@@ -771,11 +771,8 @@ inline void handleApiStats(AsyncWebServerRequest *request) {
   body += String((unsigned)g_udpSendLoopCount);
   body += ",\"udpSendStallResets\":";
   body += String((unsigned)g_udpSendStallResets);
-  // [udp-stall-split] See EVDState.h. Read all three together: if
-  // g_udpPacerDriftReset dominates, the resets are encoder overruns
-  // (blocker 1.3); if g_udpPacerAheadReset dominates, look at clock
-  // jumps (rare) or a stuck pacer (very rare); if behind dominates,
-  // look at the encoder plus WiFi TX (both on core 0's pri-23 task).
+  // [udp-stall-split] See EVDState.h. The two active counters alias stale
+  // backlog drops; the ahead counter remains zero for API compatibility.
   body += ",\"udpPacerAheadReset\":";
   body += String((unsigned)g_udpPacerAheadReset);
   body += ",\"udpPacerBehindReset\":";

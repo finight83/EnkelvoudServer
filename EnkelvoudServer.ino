@@ -59,7 +59,7 @@ static const char *SETTINGS_VERSION = "v2.0.7";
   EVDUDP.h
       UDP transport. setup_udp_transport() creates ctrlMutex and binds
       the three sockets; udpSendTask paces opusQueue→subscribers (with the
-      [pacer-catch-up-short-step] drift handling); sendCtrlToSubscriber;
+      absolute frame schedule and stale-backlog handling); sendCtrlToSubscriber;
       handleClockSyncRequests + clockSyncTask (RTT sync responder); the
       30 s authoritative time_sync broadcast. Never touches I2S or HTTP.
 
@@ -481,6 +481,7 @@ struct OpusPacket {
 struct EncodeFrame {
   int16_t  pcm[OPUS_SAMPLE_RATE_48K / (1000 / OPUS_FRAME_MS) * CHANNELS];
   uint32_t captured_ms;
+  uint32_t seq;
   uint16_t samples;
 };
 

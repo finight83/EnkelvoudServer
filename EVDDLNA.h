@@ -241,13 +241,17 @@ inline void dlnaFetchTaskFn(void *) {
   }
 
   dlnaResampler.reset();
-  dlnaResampler.setRatio(48000.0 / (double)rate);
+  // Resampler ratio is input samples consumed per output sample.
+  dlnaResampler.setRatio((double)rate / 48000.0);
 
   // Stream raw PCM. We read into a small ingress buffer, feed the resampler,
   // and push 1024-byte RawChunks (256 stereo frames @ 16-bit) into rawQueue.
   static uint8_t  inBuf[2048];
   static int16_t  outBuf[2048];
   size_t          inFill = 0;
+  uint32_t        outputTimelineStartMs = 0;
+  uint64_t        outputFramesQueued = 0;
+  bool            outputTimelineStarted = false;
 
   uint32_t lastActivity = millis();
   while (!dlnaFetchStop && client.connected()) {
@@ -300,13 +304,48 @@ inline void dlnaFetchTaskFn(void *) {
       RawChunk rc;
       memcpy(rc.data, outBuf + outConsumed * 2, n * 4);
       rc.len         = (uint32_t)(n * 4);
-      rc.captured_ms = millis();
-      if (xQueueSend(rawQueue, &rc, pdMS_TO_TICKS(10)) != pdTRUE) {
-        statNetDropped++;
-      } else {
+      if (!outputTimelineStarted) {
+        outputTimelineStartMs = millis();
+        outputFramesQueued = 0;
+        outputTimelineStarted = true;
+      }
+      rc.captured_ms = audioSampleTimestampMs(
+          outputTimelineStartMs, outputFramesQueued, 48000);
+
+      // Pace the file stream against its output sample timeline. Without
+      // this, a fast HTTP source fills rawQueue immediately and then drops
+      // chunks while the encoder drains at the audio sample rate. Blocking
+      // queue sends provide backpressure; a long stall reanchors the timeline
+      // so playback does not burst stale chunks when the consumer recovers.
+      bool queued = false;
+      while (!dlnaFetchStop && !queued) {
+        uint32_t nowMs = millis();
+        int32_t lateMs = (int32_t)(nowMs - rc.captured_ms);
+        if (lateMs > 100) {
+          outputTimelineStartMs = nowMs;
+          outputFramesQueued = 0;
+          rc.captured_ms = nowMs;
+        }
+        int32_t untilMs = (int32_t)(rc.captured_ms - nowMs);
+        if (untilMs > 0) {
+          uint32_t waitMs = (uint32_t)untilMs;
+          if (waitMs > 20) waitMs = 20;
+          vTaskDelay(pdMS_TO_TICKS(waitMs));
+          continue;
+        }
+        if (xQueueSend(rawQueue, &rc, pdMS_TO_TICKS(20)) == pdTRUE) {
+          queued = true;
+        } else {
+          vTaskDelay(1);
+        }
+      }
+      if (queued) {
+        outputFramesQueued += n;
         portENTER_CRITICAL(&gStatsMux);
           statNetBytesIn += rc.len;
         portEXIT_CRITICAL(&gStatsMux);
+      } else {
+        statNetDropped++;
       }
       outConsumed += n;
     }

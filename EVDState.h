@@ -390,29 +390,18 @@ volatile uint32_t statAudioProvisionalSkips   = 0;
 // [udp-send-liveness] Incremented once per udpSendTask loop iteration.
 // Healthy value climbs ~50/s when audio flows. If it is static while
 // statOpusDropped climbs, udpSendTask is stuck (see the recording-2 stall).
-// g_udpSendStallResets counts pacer-watchdog fires.
-// [udp-send-liveness-defs] These two are written by udpSendTask() in
-// EVDUDP.h ([udp-send-liveness-top] + [pacer-drift-BEFORE-sleep]) and
+// g_udpSendStallResets counts packets dropped while draining stale backlog.
+// [udp-send-liveness-defs] These are written by udpSendTask() in EVDUDP.h and
 // exposed by handleApiStats() in EVDSTS.h. Single-TU: defined here so
 // udpSendTask, /api/stats, and future split TUs all see one instance.
 volatile uint32_t g_udpSendLoopCount   = 0;   // udpSendTask iterations
-volatile uint32_t g_udpSendStallResets = 0;   // pacer watchdog fires (sum of the three below)
-// [udp-stall-split]
-// The 82 resets over 558 s in the recording all increment the same
-// g_udpSendStallResets, so the operator cannot tell which of the three
-// pacer triggers is firing. Three distinct triggers exist:
-//   ahead  - nextSendMs is >100 ms ahead of wall clock (pacer thinks it is
-//            early; usually a clock jump or a stale pacer after a long
-//            vTaskDelay under WiFi preemption)
-//   behind - nextSendMs is >100 ms behind wall clock (pacer thinks it is
-//            late; the classic encoder-overrun signature)
-//   drift  - postDelayMs - nextSendMs > 100 ms (hard reset; also encoder
-//            overrun but at a different point in the loop)
-// Splitting them turns "82 unexplained resets" into "68 from drift,
-// 14 from ahead, 0 from behind" and points at the actual blocker.
-volatile uint32_t g_udpPacerAheadReset  = 0;  // aheadMs  >  100
-volatile uint32_t g_udpPacerBehindReset = 0;  // aheadMs  < -100
-volatile uint32_t g_udpPacerDriftReset  = 0;  // driftMs  >  100
+volatile uint32_t g_udpSendStallResets = 0;   // stale backlog packets dropped
+// [udp-stall-split] Legacy "ahead" field is retained for API compatibility;
+// the pacer now uses an absolute deadline and cannot accumulate an ahead
+// deadline. Both active counters identify drops during stale-backlog drain.
+volatile uint32_t g_udpPacerAheadReset  = 0;  // legacy; no longer incremented
+volatile uint32_t g_udpPacerBehindReset = 0;  // stale backlog packet dropped
+volatile uint32_t g_udpPacerDriftReset  = 0;  // stale backlog packet dropped
 // [udp-stage-counters] Written by udpSendTask in EVDUDP.h; read by
 // handleApiStats in EVDSTS.h. Poll /api/stats twice and diff to find
 // the stage where the task is blocked. A frozen counter = block is
@@ -441,7 +430,7 @@ volatile uint32_t statUsbBytesLast5s = 0;
 
 // ---- DLNA network-audio stats (EVDDLNA.h) ----------------------------------
 // statNetBytesIn   - incremented by dlnaFetchTaskFn() per RawChunk enqueued.
-// statNetDropped   - RawChunk enqueues that timed out (rawQueue full).
+// statNetDropped   - produced RawChunks discarded when fetch is stopped.
 // All three are diagnostics only; the snapshot-and-reset lives in
 // loop() (EVDMain.h) next to the USB/I2S counters.
 volatile uint32_t statNetBytesIn     = 0;
