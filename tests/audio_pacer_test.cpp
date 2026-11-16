@@ -76,6 +76,30 @@ static void testIdleReanchorRequiresAnEmptyQueue() {
   assert(pacer.deadlineMs == 40);
 }
 
+static void testRecoveryWhenStaleScheduleHasNoBacklog() {
+  AudioFramePacer pacer;
+  pacer.start(0);
+  assert(pacer.prepareFrame(0, 20, 0, false));
+
+  // A stall leaves the schedule behind, but new packets then arrive at the
+  // normal frame rate with no backlog available to drain.
+  uint32_t now = 1000;
+  for (int i = 0; i < 500; ++i, now += 20) {
+    assert(pacer.prepareFrame(now, 20, 0, false));
+  }
+  assert(pacer.deadlineMs == now);
+}
+
+static void testDrainReanchorsOnLastQueuedFrame() {
+  AudioFramePacer pacer;
+  pacer.start(0);
+  assert(pacer.prepareFrame(0, 20, 0, false));
+  assert(!pacer.prepareFrame(1000, 20, 2, false));
+  assert(!pacer.prepareFrame(1000, 20, 1, false));
+  assert(pacer.prepareFrame(1000, 20, 0, false));
+  assert(pacer.deadlineMs == 1020);
+}
+
 static void testSampleTimelineDoesNotAccumulateRounding() {
   const uint32_t start = 0xfffffff0U;
   uint64_t frames = 0;
@@ -104,6 +128,8 @@ int main() {
   testRepeatedLateWakeupsDoNotDropFrames();
   testStaleBacklogDrainDoesNotBurst();
   testIdleReanchorRequiresAnEmptyQueue();
+  testRecoveryWhenStaleScheduleHasNoBacklog();
+  testDrainReanchorsOnLastQueuedFrame();
   testSampleTimelineDoesNotAccumulateRounding();
   testWrapSafeDeadlineArithmetic();
   puts("PASS: integrated pacer jitter/backlog policy, DLNA sample timeline, and wraparound");

@@ -38,6 +38,13 @@ struct AudioFramePacer {
       drainingStaleBacklog = true;
     }
     if (drainingStaleBacklog && late > 0) {
+      // Once the queue is empty, advancing one slot per newly arriving frame
+      // cannot catch up with a producer running at the same rate.
+      if (queuedFrames == 0) {
+        start(nowMs);
+        advance(frameMs);
+        return true;
+      }
       advance(frameMs);
       return false;
     }
