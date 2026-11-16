@@ -1,6 +1,6 @@
 // ---- Versioning ------------------------------------------------------------
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.1.1" // TBT - Bug Fixes
+#define EVD_FW_VERSION "3.9.1.2" // TBT - Bug Fixes
 #endif
 #define FW_VERSION EVD_FW_VERSION
 
