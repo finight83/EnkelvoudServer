@@ -1641,7 +1641,7 @@ inline void setup_queues_and_tasks() {
   //   - clockSync: polls every 1 ms, only has to answer one packet every
   //                2 s per node
   //   - loop():    inherently tolerant (discovery, NVS flush on quiet,
-  //                adaptive buffer tick, pot poll)
+  //                pot poll)
   // All of those can run on a core shared with WiFi and still deliver
   // on time.
   //

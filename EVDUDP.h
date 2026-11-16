@@ -652,7 +652,7 @@ inline void handleClockSyncRequests() {
 // ---- Dedicated clock-sync task --------------------------------------------
 // Previously handleClockSyncRequests() was called from loop() on Core 1.
 // loop() also does discovery, NVS writes (the settingsDirty block can block
-// on a flash erase for ~100 ms), adaptive buffer updates, Opus complexity
+// on a flash erase for ~100 ms), Opus complexity
 // tuning, receiver UART parsing and stats dumps. Any of those blocking
 // operations delays the parsePacket()/send() sequence that builds
 // serverRxMs/serverTxMs, and that delay is directly observable on the

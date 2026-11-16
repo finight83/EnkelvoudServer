@@ -35,8 +35,7 @@ static const char *SETTINGS_VERSION = "v2.0.7";
   EVDHelpers.h
       Cross-task helpers. PrefsGuard RAII for the NVS mutex; lockFor/
       unlockFor; find/prune/snapshot for the subscriber table and player
-      list; String escaping (jsonEscape, htmlEscape, sanitizeServerName);
-      audioBufferMs (the configured buffer sent to nodes).
+      list; String escaping (jsonEscape, htmlEscape, sanitizeServerName).
       Also forward-declares the OTA flags so EVDWiFi.h can gate on them
       before EVDOTA.h is reached.
 
@@ -130,7 +129,7 @@ static const char *SETTINGS_VERSION = "v2.0.7";
       clockSyncTask → setupReceiverLink → restore boot source →
       setup_i2s_in → 2 s resampler seed → setup_queues_and_tasks.
       loop() drives factory-reset pin, otaCheckStuckJob, serviceVolumePot,
-      discovery, adaptive playout buffer, deferred NVS flush, rate-change
+      discovery, deferred NVS flush, rate-change
       broadcast, 15 s stats window (with DLNA counter reset), rate
       anomaly detector, and GET_BT_DEVICES poll.
 

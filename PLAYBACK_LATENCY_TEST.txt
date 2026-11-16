@@ -1,0 +1,48 @@
+Playback latency: integration and verification
+
+The server sends the selected per-mode Buffer (ms) as bufferMs on every
+registration response and host_audio_sync control message. Node statistics,
+including latency and rebuffers, do not change that value. The dashboard's
+node-reported latency is a diagnostic, not a measurement of the actual
+speaker output time; the target buffer is not an end-to-end latency reading.
+
+Player firmware is maintained outside this repository. This server change
+alone does not remove any player-side adaptive buffering or implement
+deadline-based fade/drop/rejoin. Before claiming the latency policy works
+end to end, update and test the players too: apply bufferMs from both
+registration responses and control messages as the playout target, with no
+automatic target increases or decreases. A player that misses deadlines
+should fade or mute locally, discard obsolete frames, and rejoin against
+the current server clock and unchanged target when it can sustain playback;
+it must not delay healthy players. Clock synchronization and bounded queue
+management must remain active. Exact fade and recovery thresholds belong to
+the player implementation and must be validated there.
+
+End-to-end procedure (requires a server, two updated players, and an
+impairment device able to delay/drop only one player's audio traffic):
+
+1. Play a repeatable transient signal. Capture server control UDP port 4203,
+   registration HTTP responses, both players' diagnostics, and the two
+   speaker outputs on a common recording clock. Establish a stable baseline.
+2. Set Buffer (ms) to 150, then 100. At each setting verify each player's
+   registration response and host_audio_sync bufferMs match the slider, and
+   that each player reports the same configured target. Measure the actual
+   output timing separately; do not treat reported network latency or queue
+   depth as speaker latency.
+3. Delay or drop UDP audio to only one player (destination port 4202) long
+   enough to miss its deadline. Leave control and clock-sync traffic and the
+   healthy player's traffic unaffected. Verify that only the impaired player
+   fades/mutes or drops late audio; the healthy player continues at its
+   previous timing. Check both players' target values and subsequent
+   registration/control messages remain 100 ms despite increased latency
+   or rebuffer counters.
+4. Remove the impairment. Verify the affected player discards stale audio,
+   resynchronizes and rejoins at the unchanged 100 ms target without
+   accumulating delay. Compare both recorded outputs to the baseline.
+   Observe beyond the previous two-minute per-node boost window and verify
+   no delayed target change, and repeat the impairment/recovery cycle.
+5. Change the slider again and repeat with a player reconnect or missed
+   control push, verifying its next registration response carries the new
+   value. Check mode changes and reboot restore the selected per-mode value.
+   Record firmware versions, captures, impairment duration, target values,
+   rebuffer counts and measured output timing.
