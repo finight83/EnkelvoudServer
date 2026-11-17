@@ -139,9 +139,9 @@ inline String dlnaSoapFault(int code, const char *desc) {
 // controller calls Stop), the task exits cleanly and dlnaFetchRunning
 // returns to false.
 inline void dlnaFetchTaskFn(void *) {
-  dlnaFetchRunning = true;
-  dlnaFetchStop    = false;
-
+  // dlnaFetchRunning is set (and dlnaFetchStop cleared) by dlnaStartFetch()
+  // before this task is created, so a Stop arriving right after Start is
+  // never lost.
   String uri;
   if (dlnaMutex && xSemaphoreTake(dlnaMutex, pdMS_TO_TICKS(100))) {
     uri = dlnaCurrentUri;
@@ -165,6 +165,24 @@ inline void dlnaFetchTaskFn(void *) {
   int colon = hostPort.indexOf(':');
   String host = (colon < 0) ? hostPort : hostPort.substring(0, colon);
   int    port = (colon < 0) ? 80 : hostPort.substring(colon + 1).toInt();
+
+  // Reject control characters / whitespace to prevent request splitting.
+  bool badTarget = host.length() == 0 || port <= 0 || port > 65535;
+  for (size_t i = 0; !badTarget && i < host.length(); ++i) {
+    unsigned char c = (unsigned char)host[i];
+    if (c <= 0x20 || c == 0x7f) badTarget = true;
+  }
+  for (size_t i = 0; !badTarget && i < path.length(); ++i) {
+    unsigned char c = (unsigned char)path[i];
+    if (c <= 0x20 || c == 0x7f) badTarget = true;
+  }
+  if (badTarget) {
+    LOGE("DLNA: rejected URI with invalid host/path");
+    dlnaFetchRunning = false;
+    dlnaFetchTaskHandle = nullptr;
+    vTaskDelete(nullptr);
+    return;
+  }
 
   LOGI("DLNA: fetching http://%s:%d%s", host.c_str(), port, path.c_str());
 
@@ -193,13 +211,14 @@ inline void dlnaFetchTaskFn(void *) {
       char c = (char)client.read();
       hdr += c;
       if (hdr.endsWith("\r\n\r\n")) break;
+      if (hdr.length() > 2048) break;
     } else {
       vTaskDelay(1);
     }
   }
   int sc = 0;
   { int sp = hdr.indexOf(' '); if (sp > 0) sc = hdr.substring(sp + 1).toInt(); }
-  if (sc != 200) {
+  if (sc != 200 || !hdr.endsWith("\r\n\r\n")) {
     LOGE("DLNA: HTTP %d from %s", sc, host.c_str());
     client.stop();
     dlnaFetchRunning = false;
@@ -360,13 +379,18 @@ inline void dlnaFetchTaskFn(void *) {
 }
 
 inline void dlnaStartFetch() {
-  if (dlnaFetchTaskHandle) {
+  if (dlnaFetchRunning) {
     dlnaFetchStop = true;
     uint32_t t = millis();
     while (dlnaFetchRunning && millis() - t < 3000) vTaskDelay(10);
-    dlnaFetchTaskHandle = nullptr;
+    if (dlnaFetchRunning) {
+      LOGE("DLNA: previous fetch task still running; not starting a new one");
+      return;
+    }
   }
+  dlnaFetchTaskHandle = nullptr;
   dlnaFetchStop = false;
+  dlnaFetchRunning = true;
   g_rateEstimatorNeedsReset = true;
   // Core 1: alongside audioEncode (pri 5). We are pri 2, so encode always
   // wins. HTTP reads are blocking but yield via vTaskDelay(1) each loop.
@@ -376,16 +400,20 @@ inline void dlnaStartFetch() {
   if (rc != pdPASS) {
     LOGE("DLNA: failed to start fetch task (rc=%d)", (int)rc);
     dlnaFetchTaskHandle = nullptr;
+    dlnaFetchRunning = false;
   }
 }
 
 inline void dlnaStopFetch() {
-  if (!dlnaFetchTaskHandle) return;
+  if (!dlnaFetchRunning) { dlnaFetchTaskHandle = nullptr; return; }
   dlnaFetchStop = true;
   uint32_t t = millis();
   while (dlnaFetchRunning && millis() - t < 3000) vTaskDelay(10);
-  dlnaFetchTaskHandle = nullptr;
-  dlnaFetchStop = false;
+  // If the task is still alive, leave Stop set so it exits on its own.
+  if (!dlnaFetchRunning) {
+    dlnaFetchTaskHandle = nullptr;
+    dlnaFetchStop = false;
+  }
 }
 
 // ---- SSDP -----------------------------------------------------------------

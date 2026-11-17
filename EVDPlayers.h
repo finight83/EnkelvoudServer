@@ -31,8 +31,11 @@ inline void sendReceiverSourceCommand(const String &source) {
   receiverUart.printf("SRC:%s\n", source.c_str());
   unlockFor(uartMutex);
 }
-inline void sendReceiverCommand(const String &cmd) {
+inline void sendReceiverCommand(const String &cmdIn) {
   if (!receiverUart) return;
+  String cmd = cmdIn;
+  cmd.replace("\r", "");
+  cmd.replace("\n", "");
   if (!lockFor(uartMutex, 50)) return;
   receiverUart.printf("CMD:%s\n", cmd.c_str());
   unlockFor(uartMutex);
@@ -237,7 +240,7 @@ inline void handlePlayerRegistration(AsyncWebServerRequest *request, uint8_t *da
         }
         pName = safe.length() ? safe : String("Player Node");
       }
-      if (in.containsKey("version")) pVer  = in["version"].as<String>();   // NEW
+      if (in.containsKey("version")) pVer  = sanitizeVersion(in["version"].as<String>());
       // Declared audio-protocol capability, see EVDProtocolCompat.h. Only
       // trust an explicit JSON integer here; anything else (missing field,
       // wrong type) stays -1 and is treated as "not declared" below.
@@ -739,8 +742,12 @@ inline void updateNodePerf(const String &ip, uint32_t latencyMs, uint32_t queueD
       break;
     }
   }
-  if (!found) nodePerf.push_back({ip, latencyMs, queueDepth, target,
-                                  rebuffers, now, true});
+  if (!found) {
+    // Bound growth: drop stale entries first, then refuse new IPs when full.
+    pruneStalePerfLocked(now);
+    if (nodePerf.size() >= NODE_PERF_MAX_ENTRIES) { unlockFor(perfMutex); return; }
+    nodePerf.push_back({ip, latencyMs, queueDepth, target, rebuffers, now, true});
+  }
   unlockFor(perfMutex);
 }
 
@@ -757,103 +764,21 @@ inline void handleApiConfig(AsyncWebServerRequest *request, uint8_t *data,
                   "{\"ok\":false,\"error\":\"OTA in progress\"}");
     return;
   }
-  // [config-body-concurrency]
-  // The original handler accumulated the body into a single static
-  // char[1024] shared across all concurrent /api/config requests.
-  // ESPAsyncWebServer is single-worker here, so only one onBody call
-  // executes at a time, but the TCP stack can hand us A's chunks, then
-  // B's chunks, then A's remaining chunks. Two overlapping multi-chunk
-  // POSTs (e.g. the dashboard's 180 ms volume debounce racing a mode
-  // change from another tab) would therefore interleave their bytes into
-  // the same buffer and both fail to parse.
-  //
-  // Fix: allow only one multi-chunk body in flight at a time; reject
-  // others with 429. Every current client sends its whole body in a
-  // single TCP segment (all payloads are < 200 B), so in practice no
-  // request is ever rejected. A stalled body is force-cleared after 5 s
-  // so a vanished TCP peer cannot permanently block the endpoint.
-  static AsyncWebServerRequest *cfgActiveReq   = nullptr;
-  static unsigned long          cfgActiveSince = 0;
-  static char                   cfgBody[1024];
-  static size_t                 cfgLen         = 0;
-
-  if (index == 0) {
-    if (cfgActiveReq != nullptr && cfgActiveReq != request) {
-      // [cfg-latch-stale-window] Was 5000 ms. No legitimate config body
-      // takes anywhere near that; the shorter window bounds the damage
-      // when a peer aborts without firing onDisconnect.
-      if ((millis() - cfgActiveSince) < 2000UL) {
-        request->send(429, "application/json",
-                      "{\"ok\":false,\"error\":\"another config request is in progress\"}");
-        return;
-      }
-      cfgActiveReq = nullptr;         // stale entry, take over
-    }
-    // [cfg-latch-onDisconnect] If the peer aborts mid-body, the latch was
-    // never cleared — cfgActiveReq became a dangling pointer to a
-    // destroyed request, blocking config saves for the whole stale
-    // window. Register onDisconnect to release it (fires for both
-    // normal close and abort; the normal path already nulls the latch
-    // after copying the body, so the check-then-clear is a no-op then).
-    AsyncWebServerRequest *thisReq = request;
-    request->onDisconnect([thisReq]() {
-      if (cfgActiveReq == thisReq) {
-        cfgActiveReq = nullptr;
-        cfgLen       = 0;
-      }
-    });
-    cfgActiveReq   = request;
-    cfgActiveSince = millis();
-    cfgLen         = 0;
-    if (total > sizeof(cfgBody)) {
-      cfgActiveReq = nullptr;
-      request->send(400, "application/json",
-                    "{\"ok\":false,\"error\":\"Config payload too large\"}");
-      return;
-    }
-  }
-  if (cfgActiveReq != request) return;  // this request was rejected earlier
-
-  // [config-overflow-check-uses-cfgLen]
-  // The memcpy below writes at offset cfgLen, not index. A client that
-  // repeats an overlapping index (index stays small while cfgLen keeps
-  // growing) passes the index+len check but overruns cfgBody. This
-  // cannot happen with a well-behaved single-writer chunk stream where
-  // index == cfgLen, but the check costs nothing and closes the hole
-  // against malformed or hostile clients.
-  if (cfgLen + len > sizeof(cfgBody)) {
-    cfgActiveReq = nullptr;
-    cfgLen       = 0;
-    request->send(400, "application/json",
-                  "{\"ok\":false,\"error\":\"Config payload too large\"}");
-    return;
-  }
-  if (data && len > 0) {
-    memcpy(cfgBody + cfgLen, data, len);
-    cfgLen += len;
-  }
-  if (index + len != total) return;     // not yet complete
-
-  // Body fully received. Copy it into a String so cfgActiveReq can be
-  // released immediately, allowing a second request to start while we
-  // finish this one. ArduinoJson 6.x references its input buffer, so
-  // `input` keeps pointing into ownedBody for the rest of the handler;
-  // ownedBody's lifetime covers that (it is a local, destroyed at
-  // function exit). This is why we copy instead of just clearing
-  // cfgActiveReq and reading cfgBody directly.
-  String ownedBody;
-  ownedBody.reserve(cfgLen);
-  ownedBody.concat((const char*)cfgBody, cfgLen);
-  cfgActiveReq = nullptr;
-
+  // [config-body-concurrency] The body is accumulated per request (see
+  // accumulateReqBody in EVDHelpers.h), so overlapping requests cannot
+  // interleave bytes and no global latch is needed.
+  const char *cfgBody = nullptr;
+  size_t      cfgLen  = 0;
+  if (!accumulateReqBody(request, data, len, index, total, 1024,
+                         "{\"ok\":false,\"error\":\"Config payload too large\"}",
+                         cfgBody, cfgLen)) return;
   if (cfgLen == 0) {
     request->send(400, "application/json",
                   "{\"ok\":false,\"error\":\"Empty request body\"}");
     return;
   }
-
   DynamicJsonDocument input(256);
-  if (deserializeJson(input, ownedBody)) {
+  if (deserializeJson(input, cfgBody, cfgLen)) {
     request->send(400, "application/json",
                   "{\"ok\":false,\"error\":\"Invalid JSON\"}");
     return;
@@ -999,7 +924,7 @@ inline void handleApiConfig(AsyncWebServerRequest *request, uint8_t *data,
 // the UAC device. The source board is still notified (for logging) via
 // the same UART line, and it logs "handled on server, no-op here".
 inline void handleApiSourceBridge(AsyncWebServerRequest *request, uint8_t *data,
-                                  size_t len, size_t, size_t) {
+                                  size_t len, size_t index, size_t total) {
   // [ota-gate-source] otaPushToSource() (EVDOTA.h) writes OTA_DATA lines
   // directly to receiverUart while otaInProgress is true. setReceiverSource()
   // below writes SRC:<name>\n to the same UART under uartMutex, but the
@@ -1013,12 +938,12 @@ inline void handleApiSourceBridge(AsyncWebServerRequest *request, uint8_t *data,
                   "{\"ok\":false,\"error\":\"OTA in progress\"}");
     return;
   }
-  // [dlna-exclusivity] Any manual source change (BT/AUX/USB) must stop the
-  // DLNA fetch task, otherwise rawQueue would have two producers and the
-  // stream would be corrupted. dlnaStopFetch() is idempotent.
-  dlnaStopFetch();
-  dlnaPlaying = false;
-  dlnaPaused  = false;
+  if (index != 0 || len != total) {
+    if (index != 0) return;
+    request->send(413, "application/json",
+                  "{\"ok\":false,\"error\":\"body fragmented; retry\"}");
+    return;
+  }
   String source = "";
   if (len > 0 && data) {
     DynamicJsonDocument in(256);
@@ -1028,11 +953,20 @@ inline void handleApiSourceBridge(AsyncWebServerRequest *request, uint8_t *data,
   source.trim();
   source.toUpperCase();
 
-  if (source.length() == 0 || source.length() > 8) {
+  if (source.length() == 0 || source.length() > 8 ||
+      !(source == "BT" || source == "AUX" || source == "USB")) {
     request->send(400, "application/json",
                   "{\"ok\":false,\"error\":\"invalid source\"}");
     return;
   }
+
+  // [dlna-exclusivity] Any manual source change (BT/AUX/USB) must stop the
+  // DLNA fetch task, otherwise rawQueue would have two producers and the
+  // stream would be corrupted. dlnaStopFetch() is idempotent. Done only
+  // after the request validated so a bad POST cannot kill a DLNA stream.
+  dlnaStopFetch();
+  dlnaPlaying = false;
+  dlnaPaused  = false;
 
   // ---- USB: handled entirely on the server --------------------------------
   if (source == "USB") {

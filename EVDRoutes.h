@@ -406,8 +406,18 @@ inline void setup_http_server() {
         return;
       }
       DynamicJsonDocument doc(256);
-      if (!deserializeJson(doc, data, len) && doc.containsKey("mac")) {
-        sendReceiverCommand("REMOVE_BT " + doc["mac"].as<String>());
+      if (!deserializeJson(doc, data, len) && doc["mac"].is<const char*>()) {
+        String mac = doc["mac"].as<String>();
+        bool macOk = mac.length() == 17;
+        for (size_t i = 0; macOk && i < 17; ++i) {
+          char c = mac[i];
+          macOk = isxdigit((unsigned char)c) || c == ':';
+        }
+        if (!macOk) {
+          request->send(400, "application/json", "{\"ok\":false,\"error\":\"bad mac\"}");
+          return;
+        }
+        sendReceiverCommand("REMOVE_BT " + mac);
         request->send(200, "application/json", "{\"ok\":true}");
       } else {
         request->send(400, "application/json", "{\"ok\":false}");
@@ -470,7 +480,7 @@ inline void setup_http_server() {
     //   {"activeMac":"...","devices":[...]}
     // Lift its fields to the top level so the client's j.devices is the array
     // it expects, and j.activeMac matches the source board's active pairing.
-    DynamicJsonDocument cdoc(768);
+    DynamicJsonDocument cdoc(2048);
     String activeMacJson = "";
     if (!deserializeJson(cdoc, cached)) {
         JsonArray devs = cdoc["devices"].as<JsonArray>();

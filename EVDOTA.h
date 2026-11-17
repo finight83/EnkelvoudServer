@@ -82,24 +82,33 @@ volatile bool otaUploadInProgress = false;
 static bool parseFwName(const String &name, OtaFile &out) {
   int us = name.indexOf('_');
   int dot = name.lastIndexOf(".bin");
-  if (us <= 0 || dot <= us) return false;
+  if (us <= 0 || dot <= us || dot + 4 != (int)name.length()) return false;
   String kind = name.substring(0, us);
   kind.toLowerCase();
   if (kind != "server" && kind != "node" && kind != "source") return false;
+  String rawVer = name.substring(us + 1, dot);
+  String ver    = sanitizeVersion(rawVer);
+  if (ver.length() == 0 || ver != rawVer) return false;
   out.name    = name;
   out.kind    = kind;
-  out.version = name.substring(us + 1, dot);
-  return out.version.length() > 0;
+  out.version = ver;
+  return true;
 }
 
 static int cmpVersion(const String &a, const String &b) {
   int ai = 0, bi = 0;
   while (ai < (int)a.length() || bi < (int)b.length()) {
     int an = 0, bn = 0;
-    while (ai < (int)a.length() && a[ai] != '.') an = an * 10 + (a[ai++] - '0');
-    while (bi < (int)b.length() && b[bi] != '.') bn = bn * 10 + (b[bi++] - '0');
-    if (a[ai] == '.') ai++;
-    if (b[bi] == '.') bi++;
+    while (ai < (int)a.length() && a[ai] != '.') {
+      char c = a[ai++];
+      if (c >= '0' && c <= '9' && an < 100000000) an = an * 10 + (c - '0');
+    }
+    while (bi < (int)b.length() && b[bi] != '.') {
+      char c = b[bi++];
+      if (c >= '0' && c <= '9' && bn < 100000000) bn = bn * 10 + (c - '0');
+    }
+    if (ai < (int)a.length() && a[ai] == '.') ai++;
+    if (bi < (int)b.length() && b[bi] == '.') bi++;
     if (an != bn) return an < bn ? -1 : 1;
   }
   return 0;
@@ -335,7 +344,11 @@ static bool otaPushToNode(const String &ip, const OtaFile &file, String &errOut)
 
     while (f.available()) {
       size_t n = f.read(buf, sizeof(buf));
-      if (n == 0) continue;
+      if (n == 0) {
+        writeFailed = true;
+        failReason = "spool file read returned 0 bytes";
+        break;
+      }
 
       const uint8_t *wp = buf;
       size_t remaining = n;
@@ -647,26 +660,13 @@ static bool otaPushToSource(const OtaFile &file, String &errOut) {
 // mid-stream. Accumulate chunks into a small static buffer and only run
 // the parse on the final chunk. Single AsyncTCP worker, so the statics
 // are safe without a mutex.
-static char   otaApplyBody[512];
-static size_t otaApplyBodyLen = 0;
-
 static void handleOtaApply(AsyncWebServerRequest *request, uint8_t *data,
                            size_t len, size_t index, size_t total) {
-  if (index == 0) otaApplyBodyLen = 0;
-  if (otaApplyBodyLen + len > sizeof(otaApplyBody)) {
-    otaApplyBodyLen = 0;
-    request->send(400, "application/json",
-                  "{\"ok\":false,\"error\":\"apply body too large\"}");
-    return;
-  }
-  if (data && len > 0) {
-    memcpy(otaApplyBody + otaApplyBodyLen, data, len);
-    otaApplyBodyLen += len;
-  }
-  if (index + len != total) return;    // wait for the final chunk
-  size_t bodyLen  = otaApplyBodyLen;
-  otaApplyBodyLen = 0;
-
+  const char *otaApplyBody = nullptr;
+  size_t bodyLen = 0;
+  if (!accumulateReqBody(request, data, len, index, total, 512,
+                         "{\"ok\":false,\"error\":\"apply body too large\"}",
+                         otaApplyBody, bodyLen)) return;
   LOGW("OTA: /api/ota/apply entered (bodyLen=%u total=%u inProgress=%d heap=%u maxBlk=%u)",
        (unsigned)bodyLen, (unsigned)total, (int)otaInProgress,
        (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
@@ -1389,26 +1389,13 @@ static inline void otaCheckStuckJob() {
 // [ota-delete-chunk-accumulator] Same 3-arg chunk form as handleOtaApply().
 // Body is tiny (<128 B) and never fragments in practice, but the pattern
 // matches /api/ota/apply so a fragmented body does not parse garbage.
-static char   otaDeleteBody[192];
-static size_t otaDeleteBodyLen = 0;
-
 static void handleOtaDelete(AsyncWebServerRequest *request, uint8_t *data,
                             size_t len, size_t index, size_t total) {
-  if (index == 0) otaDeleteBodyLen = 0;
-  if (otaDeleteBodyLen + len > sizeof(otaDeleteBody)) {
-    otaDeleteBodyLen = 0;
-    request->send(400, "application/json",
-                  "{\"ok\":false,\"error\":\"delete body too large\"}");
-    return;
-  }
-  if (data && len > 0) {
-    memcpy(otaDeleteBody + otaDeleteBodyLen, data, len);
-    otaDeleteBodyLen += len;
-  }
-  if (index + len != total) return;
-  size_t bodyLen = otaDeleteBodyLen;
-  otaDeleteBodyLen = 0;
-
+  const char *otaDeleteBody = nullptr;
+  size_t bodyLen = 0;
+  if (!accumulateReqBody(request, data, len, index, total, 192,
+                         "{\"ok\":false,\"error\":\"delete body too large\"}",
+                         otaDeleteBody, bodyLen)) return;
   // [ota-delete-mutex-guard] Refuse while a flash or upload is running:
   // the running job holds the file open, and LittleFS.remove() while a
   // File handle is active either fails or corrupts metadata. The wizard
@@ -1710,9 +1697,15 @@ static void handleOtaUploadChunk(AsyncWebServerRequest *request, String filename
 
     size_t totalSpace = LittleFS.totalBytes();
     size_t usedSpace  = LittleFS.usedBytes();
-    if (totalSpace - usedSpace < 2 * 1024 * 1024) {
-      LOGE("OTA upload: LittleFS full (%u free, need 2MB)",
-           (unsigned)(totalSpace - usedSpace));
+    size_t freeSpace  = totalSpace > usedSpace ? totalSpace - usedSpace : 0;
+    // Use the real upload size when the client sent Content-Length; fall
+    // back to the 2 MB reserve otherwise. 64 KB covers multipart framing
+    // and LittleFS block overhead.
+    size_t declaredLen = request->contentLength();
+    size_t needSpace   = declaredLen > 0 ? declaredLen + 64 * 1024 : 2 * 1024 * 1024;
+    if (freeSpace < needSpace) {
+      LOGE("OTA upload: LittleFS full (%u free, need %u)",
+           (unsigned)freeSpace, (unsigned)needSpace);
       otaUploadHadError = true;
       otaUploadErrorMsg = "LittleFS full; free space and retry";
       return;

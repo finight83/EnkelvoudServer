@@ -192,6 +192,49 @@ inline std::vector<Zone> snapshotZones() {
   return copy;
 }
 
+// ---- Per-request body accumulation ----------------------------------------
+// Chunked POST bodies are accumulated in request->_tempObject (freed by the
+// library with the request), so concurrent requests never share a buffer.
+// Returns true only when the whole body has arrived: body is then a
+// NUL-terminated buffer of bodyLen bytes. On rejection (too large /
+// inconsistent chunking) the error response is sent once and later chunks
+// for the same request are ignored.
+struct ReqBodyBuf { size_t cap; size_t got; bool rejected; char data[1]; };
+
+inline bool accumulateReqBody(AsyncWebServerRequest *request, const uint8_t *data,
+                              size_t len, size_t index, size_t total, size_t maxLen,
+                              const char *tooLargeJson, const char *&body, size_t &bodyLen) {
+  ReqBodyBuf *rb = (ReqBodyBuf *)request->_tempObject;
+  if (index == 0 && !rb) {
+    if (total > maxLen) {
+      rb = (ReqBodyBuf *)malloc(sizeof(ReqBodyBuf));
+      if (rb) { rb->cap = 0; rb->got = 0; rb->rejected = true; request->_tempObject = rb; }
+      request->send(400, "application/json", tooLargeJson);
+      return false;
+    }
+    rb = (ReqBodyBuf *)malloc(sizeof(ReqBodyBuf) + total);
+    if (!rb) {
+      request->send(503, "application/json", "{\"ok\":false,\"error\":\"out of memory\"}");
+      return false;
+    }
+    rb->cap = total; rb->got = 0; rb->rejected = false;
+    request->_tempObject = rb;
+  }
+  if (!rb || rb->rejected) return false;
+  if (index != rb->got || rb->got + len > rb->cap) {
+    rb->rejected = true;
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"bad body framing\"}");
+    return false;
+  }
+  if (data && len > 0) { memcpy(rb->data + rb->got, data, len); rb->got += len; }
+  if (rb->got != rb->cap) return false;
+  rb->data[rb->got] = '\0';
+  rb->rejected = true;           // consumed; ignore any trailing chunks
+  body    = rb->data;
+  bodyLen = rb->got;
+  return true;
+}
+
 // ---- Node perf list management ---------------------------------------------
 // The perf table only ever grows: updateNodePerf() (EVDPlayers.h) appends a
 // new entry for every IP it has never seen and nothing ever removes one. A
@@ -201,6 +244,7 @@ inline std::vector<Zone> snapshotZones() {
 // so the operator sees a stale entry. Prune on every snapshot; these
 // diagnostics expire independently of the player/subscriber tables.
 #define NODE_PERF_STALE_TIMEOUT_MS 20000UL
+#define NODE_PERF_MAX_ENTRIES 32
 
 inline void pruneStalePerfLocked(unsigned long nowMs) {
   nodePerf.erase(
@@ -249,6 +293,17 @@ inline String sanitizeServerName(const String &value) {
   return result.length() ? result : "Enkelvoud";
 }
 
+// Whitelist [0-9A-Za-z._-], capped at 32 chars. Returns "" if nothing survives.
+inline String sanitizeVersion(const String &value) {
+  String out;
+  for (size_t i = 0; i < value.length() && out.length() < 32; ++i) {
+    char c = value[i];
+    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        c == '.' || c == '_' || c == '-') out += c;
+  }
+  return out;
+}
+
 inline String htmlEscape(const String &value) {
   String escaped;
   escaped.reserve(value.length());
@@ -256,6 +311,7 @@ inline String htmlEscape(const String &value) {
     switch (value[i]) {
       case '&': escaped += F("&amp;");  break;
       case '"': escaped += F("&quot;"); break;
+      case '\'': escaped += F("&#39;"); break;
       case '<': escaped += F("&lt;");   break;
       case '>': escaped += F("&gt;");   break;
       default:  escaped += value[i];    break;
