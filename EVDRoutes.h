@@ -235,6 +235,50 @@ inline void setup_http_server() {
                 String("{\"ok\":true,\"level\":") + String(v) + "}");
     });
 
+  // ---- DLNA on/off (persisted). The work can block for seconds (SSDP task
+  // exit, fetch stop), so it runs in a short-lived task, not the async handler.
+  server.on("/api/dlna", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->send(200, "application/json",
+              String("{\"ok\":true,\"enabled\":") + (dlnaEnabled ? "true" : "false") + "}");
+  });
+  server.on("/api/dlna", HTTP_POST,
+    rejectEmptyBodyPost,
+    nullptr,
+    [](AsyncWebServerRequest *req, uint8_t *data, size_t len,
+       size_t index, size_t total) {
+      if (index != 0 || len != total) {
+        req->send(413, "application/json",
+                  "{\"ok\":false,\"error\":\"body fragmented; retry\"}");
+        return;
+      }
+      StaticJsonDocument<64> in;
+      if (deserializeJson(in, data, len) || !in["enabled"].is<bool>()) {
+        req->send(400, "application/json", "{\"ok\":false}");
+        return;
+      }
+      static volatile bool pending = false;
+      if (pending) {
+        req->send(409, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+        return;
+      }
+      bool en = in["enabled"].as<bool>();
+      pending = true;
+      static bool target;
+      target = en;
+      BaseType_t rc = xTaskCreate([](void *) {
+        dlnaSetEnabled(target);
+        pending = false;
+        vTaskDelete(nullptr);
+      }, "dlnaToggle", 4096, nullptr, 1, nullptr);
+      if (rc != pdPASS) {
+        pending = false;
+        req->send(500, "application/json", "{\"ok\":false}");
+        return;
+      }
+      req->send(200, "application/json",
+                String("{\"ok\":true,\"enabled\":") + (en ? "true" : "false") + "}");
+    });
+
   // ---- Serial-log tail ----------------------------------------------------
   //  Returns every log-ring entry whose seq is greater than the client's
   //  ?since= cursor, up to the ring's capacity, as a single JSON object:
