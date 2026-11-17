@@ -586,6 +586,11 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           <span class="muted" id="status-advanced-log-state">off (errors only)</span>
         </div>
 
+        <div class="log-controls" style="margin-top:14px;align-items:center;">
+          <button type="button" class="btn-glass" id="status-dlna-toggle" disabled>DLNA: …</button>
+          <span class="muted" id="status-dlna-state">loading</span>
+        </div>
+
         <div id="status-log-viewer" style="display:none;margin-top:14px;">
           <div class="data-label">Serial Log (live)</div>
           <pre id="status-log-pre" style="font-size:0.78rem;max-height:40vh;overflow:auto;background:rgba(0,0,0,0.35);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);white-space:pre-wrap;margin-top:8px;">(waiting for lines…)</pre>
@@ -1847,6 +1852,28 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
           viewer.style.display = 'none';
         }
+      });
+    })();
+
+    // DLNA on/off
+    (function(){
+      var btn = $('status-dlna-toggle'), state = $('status-dlna-state');
+      if (!btn || !state) return;
+      var enabled = true;
+      function render() {
+        btn.textContent = enabled ? 'Disable DLNA' : 'Enable DLNA';
+        state.textContent = enabled ? 'on (visible to phones/TVs)' : 'off (not advertised)';
+      }
+      api('/api/dlna', 'GET', null, { silent: true }).then(function(j){
+        if (j && j.ok) { enabled = !!j.enabled; render(); btn.disabled = false; }
+        else state.textContent = 'unavailable';
+      });
+      btn.addEventListener('click', async function(){
+        btn.disabled = true;
+        var j = await api('/api/dlna', 'POST', { enabled: !enabled });
+        if (j && j.ok) { enabled = !!j.enabled; render(); }
+        else state.textContent = 'failed';
+        btn.disabled = false;
       });
     })();
 

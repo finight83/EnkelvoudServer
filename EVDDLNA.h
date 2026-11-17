@@ -46,6 +46,8 @@ static TaskHandle_t      dlnaSsdpTaskHandle  = nullptr;
 static TaskHandle_t      dlnaFetchTaskHandle = nullptr;
 static volatile bool     dlnaFetchStop       = false;
 static volatile bool     dlnaFetchRunning    = false;
+static volatile bool     dlnaEnabled         = true;
+static volatile bool     dlnaSsdpStopReq     = false;
 
 // Independent resampler instance for the network path. Ratio 44.1k->48k is
 // 1.08843; 48k->48k is 1.00000 (fast path is a memcpy).
@@ -418,7 +420,8 @@ inline void dlnaStopFetch() {
 
 // ---- SSDP -----------------------------------------------------------------
 inline void dlnaSsdpSend(const IPAddress &dst, uint16_t port,
-                         const char *st, bool isSearchResponse) {
+                         const char *st, bool isSearchResponse,
+                         const char *nts = "ssdp:alive") {
   String x;
   x.reserve(512);
   if (isSearchResponse) {
@@ -436,14 +439,14 @@ inline void dlnaSsdpSend(const IPAddress &dst, uint16_t port,
   x += "ST: "; x += st; x += "\r\n";
   x += "USN: "; x += dlnaUuid; x += "::"; x += st; x += "\r\n";
   x += "NT: "; x += st; x += "\r\n";       // for NOTIFY
-  x += "NTS: ssdp:alive\r\n";
+  x += "NTS: "; x += nts; x += "\r\n";
   x += "\r\n";
   dlnaSsdpUdp.beginPacket(dst, port);
   dlnaSsdpUdp.write((const uint8_t *)x.c_str(), x.length());
   dlnaSsdpUdp.endPacket();
 }
 
-inline void dlnaSsdpNotifyAll() {
+inline void dlnaSsdpNotifyAll(const char *nts = "ssdp:alive") {
   static const char *targets[] = {
     "upnp:rootdevice",
     "urn:schemas-upnp-org:device:MediaRenderer:1",
@@ -452,7 +455,7 @@ inline void dlnaSsdpNotifyAll() {
     "urn:schemas-upnp-org:service:ConnectionManager:1",
   };
   for (auto *t : targets) {
-    dlnaSsdpSend(IPAddress(239,255,255,250), 1900, t, false);
+    dlnaSsdpSend(IPAddress(239,255,255,250), 1900, t, false, nts);
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
@@ -460,6 +463,7 @@ inline void dlnaSsdpNotifyAll() {
 inline void dlnaSsdpTaskFn(void *) {
   uint32_t lastNotify = 0;
   for (;;) {
+    if (dlnaSsdpStopReq) break;
     if (WiFi.status() != WL_CONNECTED) {
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
@@ -511,6 +515,9 @@ inline void dlnaSsdpTaskFn(void *) {
       }
     }
   }
+  dlnaSsdpUdp.stop();
+  dlnaSsdpTaskHandle = nullptr;
+  vTaskDelete(nullptr);
 }
 
 // ---- Description + SCPD endpoints -----------------------------------------
@@ -561,6 +568,7 @@ inline String dlnaDescriptionXml() {
 }
 
 inline void dlnaHandleDescription(AsyncWebServerRequest *request) {
+  if (!dlnaEnabled) { request->send(503, "text/plain", "DLNA disabled"); return; }
   String x = dlnaDescriptionXml();
   AsyncWebServerResponse *r =
       request->beginResponse(200, "text/xml; charset=utf-8", x);
@@ -688,6 +696,10 @@ inline void dlnaReplySoap(AsyncWebServerRequest *request,
 inline void dlnaHandleControlAvt(AsyncWebServerRequest *request,
                                  uint8_t *data, size_t len,
                                  size_t index, size_t total) {
+  if (!dlnaEnabled) {
+    if (index == 0) request->send(503, "text/plain", "DLNA disabled");
+    return;
+  }
   if (index != 0 || len != total) {
     if (index != 0) return;
     request->send(413, "text/xml", dlnaSoapFault(402, "Body fragmented"));
@@ -809,6 +821,10 @@ inline void dlnaHandleControlAvt(AsyncWebServerRequest *request,
 inline void dlnaHandleControlRcs(AsyncWebServerRequest *request,
                                  uint8_t *data, size_t len,
                                  size_t index, size_t total) {
+  if (!dlnaEnabled) {
+    if (index == 0) request->send(503, "text/plain", "DLNA disabled");
+    return;
+  }
   if (index != 0 || len != total) {
     if (index != 0) return;
     request->send(413, "text/xml", dlnaSoapFault(402, "Body fragmented"));
@@ -855,6 +871,10 @@ inline void dlnaHandleControlRcs(AsyncWebServerRequest *request,
 inline void dlnaHandleControlCms(AsyncWebServerRequest *request,
                                  uint8_t *data, size_t len,
                                  size_t index, size_t total) {
+  if (!dlnaEnabled) {
+    if (index == 0) request->send(503, "text/plain", "DLNA disabled");
+    return;
+  }
   if (index != 0 || len != total) {
     if (index != 0) return;
     request->send(413, "text/xml", dlnaSoapFault(402, "Body fragmented"));
@@ -895,6 +915,75 @@ inline void dlnaHandleControlCms(AsyncWebServerRequest *request,
   request->send(500, "text/xml", dlnaSoapFault(401, "Invalid Action"));
 }
 
+// ---- Enable / disable ------------------------------------------------------
+inline void dlnaLoadEnabled() {
+  PrefsGuard pg;
+  if (!pg.ok()) return;
+  if (!preferences.begin("enkelvoud", true)) { preferences.end(); return; }
+  dlnaEnabled = preferences.getBool("dlna_en", true);
+  preferences.end();
+}
+
+inline void dlnaSaveEnabled(bool en) {
+  PrefsGuard pg;
+  if (!pg.ok()) { LOGW("DLNA: prefsMutex busy; setting NOT saved"); return; }
+  if (!preferences.begin("enkelvoud", false)) {
+    LOGW("DLNA: preferences.begin failed; setting NOT saved");
+    return;
+  }
+  preferences.putBool("dlna_en", en);
+  preferences.end();
+}
+
+inline bool dlnaStartSsdp() {
+  uint32_t t = millis();
+  while (dlnaSsdpTaskHandle && millis() - t < 1000) vTaskDelay(pdMS_TO_TICKS(10));
+  if (dlnaSsdpTaskHandle) return false;
+  dlnaSsdpStopReq = false;
+  if (!dlnaSsdpUdp.beginMulticast(IPAddress(239, 255, 255, 250), 1900)) {
+    LOGE("DLNA: beginMulticast(239.255.255.250:1900) failed");
+    return false;
+  }
+  BaseType_t rc = xTaskCreatePinnedToCore(
+      dlnaSsdpTaskFn, "dlnaSsdp", 3072, nullptr, 2,
+      &dlnaSsdpTaskHandle, 0);
+  if (rc != pdPASS) {
+    LOGE("DLNA: failed to start SSDP task (rc=%d)", (int)rc);
+    dlnaSsdpUdp.stop();
+    return false;
+  }
+  LOGI("DLNA: MediaRenderer ready, UUID=%s, friendly=%s",
+       dlnaUuid.c_str(), dlnaFriendlyName.c_str());
+  return true;
+}
+
+inline void dlnaStopSsdp() {
+  if (!dlnaSsdpTaskHandle) return;
+  dlnaSsdpStopReq = true;
+  uint32_t t = millis();
+  while (dlnaSsdpTaskHandle && millis() - t < 1000) vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+// Runs on the AsyncTCP task; blocks up to ~1 s while the SSDP task exits.
+inline void dlnaSetEnabled(bool en) {
+  if (en == dlnaEnabled) return;
+  dlnaEnabled = en;
+  dlnaSaveEnabled(en);
+  if (en) {
+    dlnaStartSsdp();
+    return;
+  }
+  dlnaSsdpNotifyAll("ssdp:byebye");
+  dlnaStopSsdp();
+  dlnaPlaying = false;
+  dlnaPaused  = false;
+  dlnaStopFetch();
+  if (serverInputSource == SRC_FROM_NETWORK) {
+    serverInputSource = dlnaPrevSource;
+    g_rateEstimatorNeedsReset = true;
+  }
+}
+
 // ---- Init -----------------------------------------------------------------
 inline void initDlna() {
   if (!dlnaMutex) dlnaMutex = xSemaphoreCreateMutex();
@@ -911,18 +1000,10 @@ inline void initDlna() {
   dlnaResampler.reset();
   dlnaResampler.setRatio(1.0);
 
-  // Bind SSDP on 239.255.255.250:1900.
-  if (!dlnaSsdpUdp.beginMulticast(IPAddress(239, 255, 255, 250), 1900)) {
-    LOGE("DLNA: beginMulticast(239.255.255.250:1900) failed");
+  dlnaLoadEnabled();
+  if (!dlnaEnabled) {
+    LOGI("DLNA: disabled in settings; SSDP not started");
     return;
   }
-  BaseType_t rc = xTaskCreatePinnedToCore(
-      dlnaSsdpTaskFn, "dlnaSsdp", 3072, nullptr, 2,
-      &dlnaSsdpTaskHandle, 0);
-  if (rc != pdPASS) {
-    LOGE("DLNA: failed to start SSDP task (rc=%d)", (int)rc);
-    return;
-  }
-  LOGI("DLNA: MediaRenderer ready, UUID=%s, friendly=%s",
-       dlnaUuid.c_str(), dlnaFriendlyName.c_str());
+  dlnaStartSsdp();
 }
