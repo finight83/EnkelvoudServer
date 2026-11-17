@@ -1481,7 +1481,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     if (nodes.length > 0) {
       nodes.forEach(function(node){
         var safeNodeName = (node.name || 'Node').replace(/"/g, '&quot;');
-        var verTag = node.version ? ' <span style="color:var(--text-muted);font-weight:400;font-size:0.75rem;">v' + String(node.version).replace(/"/g, '') + '</span>' : '';
+        var verTag = node.version ? ' <span style="color:var(--text-muted);font-weight:400;font-size:0.75rem;">v' + String(node.version).replace(/[^0-9A-Za-z._-]/g, '') + '</span>' : '';
         var isOffline = (node.known === false);
         var chipClass = isOffline ? 'node-chip offline' : 'node-chip';
         var gearHtml = isOffline
@@ -2875,7 +2875,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
             html += '<label class="ota-node-item">' +
               '<input type="checkbox" class="otaNodeChk" value="' + n.ip + '" ' + (canCheck ? '' : 'disabled') + '>' +
               '<div class="ota-node-body"><div class="ota-node-name">' + (n.name || n.ip) + '</div><div class="ota-node-ip">' + n.ip + '</div></div>' +
-              '<div class="ota-node-ver">v' + n.version + (showNewer ? ' <span class="new">→ v' + nf.version + '</span>' : '') + (n.reachable ? '' : '<br><span style="color:var(--danger);">offline</span>') + '</div>' +
+              '<div class="ota-node-ver">v' + String(n.version).replace(/[^0-9A-Za-z._-]/g, '') + (showNewer ? ' <span class="new">→ v' + String(nf.version).replace(/[^0-9A-Za-z._-]/g, '') + '</span>' : '') + (n.reachable ? '' : '<br><span style="color:var(--danger);">offline</span>') + '</div>' +
               '</label>';
           });
         }

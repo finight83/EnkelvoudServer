@@ -520,6 +520,9 @@ inline bool validStaticStationAddress(const IPAddress &ip, const IPAddress &gate
   uint32_t mask    = ((uint32_t)subnet[0]  << 24) | ((uint32_t)subnet[1]  << 16) | ((uint32_t)subnet[2]  << 8) | subnet[3];
   uint32_t hostMask = ~mask;
 
+  // Mask must be contiguous ones followed by zeros, and not 0.
+  if (mask == 0 || (hostMask & (hostMask + 1)) != 0) return false;
+
   return address != router && address != 0 && address != 0xFFFFFFFF &&
          address != 0xC0A80401 && (address & mask) == (router & mask) &&
          (address & hostMask) != 0 && (address & hostMask) != hostMask;
@@ -768,8 +771,13 @@ inline void handleRestart(AsyncWebServerRequest *request) {
     return;
   }
   request->send(200, "application/json", "{\"ok\":true}");
-  delay(200);
-  ESP.restart();
+  // Restart from a separate task so the async_tcp handler returns and the
+  // response can flush.
+  xTaskCreate([](void *) {
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP.restart();
+    vTaskDelete(nullptr);
+  }, "restartTask", 2048, nullptr, 1, nullptr);
 }
 
 // ---- AP / STA bring-up -----------------------------------------------------
