@@ -50,16 +50,32 @@
   static EspUsbDevice              *gUsbDevice   = nullptr;
   static EspUsbAudioFunction       *gUsbAudio    = nullptr;
   static EspUsbAudioPlaybackStream *gUsbPlayback = nullptr;
-  static volatile bool              gUsbRunning  = false;
+
+  // [usb-running-atomic] Plain bool + __atomic builtins. Do NOT combine
+  // `volatile` with __atomic_*_n — that is a memory-model smell. The
+  // release (start/stop) / acquire (read) pairs are what make object
+  // publication safe across the two cores.
+  static bool                       gUsbRunning  = false;
+
+  // Last error string; static literals only (never freed), so a plain
+  // const char* is safe to read from the HTTP task without a lock.
   static const char                *gUsbLastError = "";
+
   // [usb-lifecycle-mutex] Serialises the audioReadTask's read() against
-  // stopServerUsbAudio()'s teardown. Without it, stop's delay(50) is the
-  // only synchronisation, and a read that blocks for >50 ms (host silent,
-  // event loop stalled) can be mid-flight when gUsbPlayback is deleted —
-  // use-after-free. Created lazily in startServerUsbAudio (single
-  // AsyncTCP task, guarded by the gUsbRunning early return).
+  // stopServerUsbAudio()'s teardown and startServerUsbAudio()'s publish.
+  // Created ONCE at boot by initUsbLifecycle() — never lazily, because a
+  // NULL mutex silently disables the read path forever at 92 % heap.
   static SemaphoreHandle_t          gUsbLifecycleMutex = nullptr;
+
   inline const char *usbLastError() { return gUsbLastError; }
+
+  // [usb-mutex-boot-create] MUST be called from setup(), single-threaded,
+  // BEFORE setup_queues_and_tasks() spawns audioReadTask. Idempotent.
+  inline void initUsbLifecycle() {
+    if (!gUsbLifecycleMutex) gUsbLifecycleMutex = xSemaphoreCreateMutex();
+    if (!gUsbLifecycleMutex)
+      LOGE("USB audio: lifecycle mutex alloc failed (OOM)");
+  }
 
   // ---- Host volume / mute state -------------------------------------------
   // USB Audio 1.0 units: 1/256 dB. 0 = 0 dB (full scale),
@@ -123,9 +139,42 @@
   //
   // Returns true on success. On failure, all objects are cleaned up and
   // false is returned, leaving the previous source untouched.
+  // ---- startServerUsbAudio ------------------------------------------------
+  // Enumerates us as a UAC1 speaker at SOURCE_SAMPLE_RATE (48000 Hz),
+  // 16-bit, stereo. The rate matches the I2S path exactly so the resampler
+  // ratio in EVDAudio.h stays valid - no pitch shift, no resample step.
+  //
+  // Runs under gUsbLifecycleMutex so a concurrent stopServerUsbAudio()
+  // cannot tear down mid-enumeration. gUsbRunning is published LAST with
+  // a release barrier; the read path acquires it before dereferencing
+  // gUsbAudio / gUsbPlayback.
+  //
+  // Returns true on success. On failure, all objects are cleaned up and
+  // false is returned, leaving the previous source untouched.
   inline bool startServerUsbAudio() {
-    if (gUsbRunning) return true;
-    if (!gUsbLifecycleMutex) gUsbLifecycleMutex = xSemaphoreCreateMutex();
+    // [usb-start-idempotent] Fast path: already running. Acquire so the
+    // caller sees a fully-published state.
+    if (__atomic_load_n(&gUsbRunning, __ATOMIC_ACQUIRE)) return true;
+
+    if (!gUsbLifecycleMutex) {
+      // initUsbLifecycle() was not called from setup(), or mutex alloc
+      // failed at boot. Refuse rather than run unlocked.
+      LOGE("USB audio: start before initUsbLifecycle(); refusing");
+      gUsbLastError = "mutex_missing";
+      return false;
+    }
+    if (xSemaphoreTake(gUsbLifecycleMutex, portMAX_DELAY) != pdTRUE) {
+      gUsbLastError = "mutex_fail";
+      return false;
+    }
+
+    // Re-check under the mutex: a racing start on the same core could
+    // have completed while we waited (only one HTTP task today, but the
+    // guard is cheap and future-proof).
+    if (__atomic_load_n(&gUsbRunning, __ATOMIC_ACQUIRE)) {
+      xSemaphoreGive(gUsbLifecycleMutex);
+      return true;
+    }
 
     LOGI("USB audio: enumerating UAC1 speaker (%d Hz, %d-bit, %d ch)...",
          SOURCE_SAMPLE_RATE, 16, CHANNELS);
@@ -135,6 +184,7 @@
   #else
     LOGE("USB audio: this chip has no native USB-OTG (needs ESP32-S2/S3/P4)");
     gUsbLastError = "unsupported_target";
+    xSemaphoreGive(gUsbLifecycleMutex);
     return false;
   #endif
   #if defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE == 1
@@ -145,6 +195,7 @@
     if (!gUsbDevice) {
       LOGE("USB audio: out of memory allocating EspUsbDevice");
       gUsbLastError = "alloc_failed";
+      xSemaphoreGive(gUsbLifecycleMutex);
       return false;
     }
     gUsbAudio = new (std::nothrow) EspUsbAudioFunction(*gUsbDevice);
@@ -152,6 +203,7 @@
       LOGE("USB audio: out of memory allocating EspUsbAudioFunction");
       delete gUsbDevice; gUsbDevice = nullptr;
       gUsbLastError = "alloc_failed";
+      xSemaphoreGive(gUsbLifecycleMutex);
       return false;
     }
     gUsbPlayback = &gUsbAudio->addPlaybackStream();
@@ -161,6 +213,11 @@
     // The third field is UAC's bSubFrameSize - bytes per channel - so 2 for
     // 16-bit, NOT 4 (which would claim "32-bit samples, 16 bits used" and
     // make Windows negotiate a mismatch after enumeration).
+    //
+    // [usb-addformat-check] If the pinned library's addFormat() returns
+    // bool, promote this to `if (!gUsbPlayback->addFormat({...})) { ... }`.
+    // We cannot see the header; the post-begin() Feature Unit probe below
+    // surfaces a mismatch as a "no volume range" warning in the log.
     gUsbPlayback->addFormat({ (uint32_t)SOURCE_SAMPLE_RATE,
                               (uint8_t)CHANNELS,
                               (uint8_t)2,
@@ -183,6 +240,7 @@
       gUsbPlayback = nullptr;
       delete gUsbAudio;  gUsbAudio  = nullptr;
       delete gUsbDevice; gUsbDevice = nullptr;
+      xSemaphoreGive(gUsbLifecycleMutex);
       return false;
     }
 
@@ -210,7 +268,15 @@
          (float)gUsbHostVolumeDb256 / 256.0f, gUsbHostMuted ? "on" : "off");
 
     gUsbLastError = "";
-    gUsbRunning = true;
+
+    // [usb-publish-release] Publish the running flag LAST, after every
+    // object the read path dereferences is fully constructed. The release
+    // barrier orders all prior stores before this one, so the audio core's
+    // acquire load in readServerUsbAudio() cannot observe gUsbRunning==true
+    // while gUsbPlayback is still half-built.
+    __atomic_store_n(&gUsbRunning, true, __ATOMIC_RELEASE);
+    xSemaphoreGive(gUsbLifecycleMutex);
+
     LOGI("USB audio: device enumerated, VID:PID %04x:%04x, serial=%s",
          (unsigned)EVD_USB_VID, (unsigned)EVD_USB_PID, cfg.serialNumber);
     LOGI("USB audio: heap after begin %u B, playback stream ready=%s",
@@ -222,18 +288,49 @@
   // ---- stopServerUsbAudio -------------------------------------------------
   // Tears the device down. The host sees the device disappear, which is the
   // correct UX: while the source is BT/AUX, we are not a USB sound card.
+  // ---- stopServerUsbAudio -------------------------------------------------
+  // Tears the device down. The host sees the device disappear, which is the
+  // correct UX: while the source is BT/AUX, we are not a USB sound card.
+  //
+  // [usb-stop-bounded] The mutex take is BOUNDED (500 ms). A reader parked
+  // inside a blocking read() on a silent host would otherwise stall this
+  // HTTP task forever. On timeout we deliberately LEAK the device objects
+  // (unreachable, harmless until reboot) rather than delete them out from
+  // under the in-flight read — one leaked UAC object on a mode switch is
+  // far cheaper than a use-after-free crash loop.
   inline void stopServerUsbAudio() {
-    if (!gUsbRunning) return;
+    if (!__atomic_load_n(&gUsbRunning, __ATOMIC_ACQUIRE)) return;
     LOGI("USB audio: stopping device");
 
-    // [usb-lifecycle-mutex] Wait for any in-flight read() to complete
-    // before tearing the object down. PortMAX_DELAY is correct here: a
-    // reader holding the mutex is inside gUsbPlayback->read() and will
-    // return within its chunk timeout; there is no legitimate path where
-    // this blocks forever. The previous delay(50) was the only
-    // synchronisation and was not sufficient for a stalled UAC host.
-    if (gUsbLifecycleMutex) xSemaphoreTake(gUsbLifecycleMutex, portMAX_DELAY);
-    gUsbRunning = false;
+    if (!gUsbLifecycleMutex) {
+      // Should be impossible: initUsbLifecycle() runs at boot. Be safe.
+      __atomic_store_n(&gUsbRunning, false, __ATOMIC_RELEASE);
+      gUsbPlayback = nullptr;
+      return;
+    }
+
+    // [usb-stop-bounded] 500 ms is far longer than any legitimate read()
+    // chunk wait on a live host, and short enough that the HTTP task
+    // cannot hang a source switch. On timeout: publish not-running FIRST,
+    // null our refs, LEAK the objects. The in-flight read() returns into
+    // live memory; the leak is unreachable until reboot.
+    if (xSemaphoreTake(gUsbLifecycleMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+      LOGE("USB audio: stop timed out waiting for read(); "
+           "leaking device to avoid UAF");
+      __atomic_store_n(&gUsbRunning, false, __ATOMIC_RELEASE);
+      gUsbPlayback = nullptr;
+      gUsbDevice   = nullptr;
+      gUsbAudio    = nullptr;
+      // [usb-leak-reset-diag] The device is gone from the host's view the
+      // moment the audio task returns; clear the Feature Unit mirrors so
+      // /api/state does not keep advertising a stale Windows volume.
+      gUsbHostVolumeDb256      = 0;
+      gUsbHostMuted            = false;
+      gUsbHostHasEverSetVolume = false;
+      return;
+    }
+
+    __atomic_store_n(&gUsbRunning, false, __ATOMIC_RELEASE);
     if (gUsbDevice) {
       gUsbDevice->end();
       gUsbPlayback = nullptr;
@@ -243,7 +340,7 @@
     gUsbHostVolumeDb256      = 0;
     gUsbHostMuted            = false;
     gUsbHostHasEverSetVolume = false;
-    if (gUsbLifecycleMutex) xSemaphoreGive(gUsbLifecycleMutex);
+    xSemaphoreGive(gUsbLifecycleMutex);
     LOGI("USB audio: device stopped");
   }
 
@@ -256,8 +353,24 @@
   // user's expectation of the Windows slider.
   //
   // The caller (audioReadTask) treats 0 as "nothing right now" and sleeps.
+  // ---- readServerUsbAudio -------------------------------------------------
+  // Pulls PCM from the UAC playback stream. Polls the Feature Unit event
+  // queue so host volume/mute changes are visible in the dashboard's
+  // diagnostics, but does NOT scale the returned samples: Windows already
+  // applies its software gain before transmitting, so applying it here
+  // again double-attenuates the stream. Passthrough is what matches the
+  // user's expectation of the Windows slider.
+  //
+  // The caller (audioReadTask) treats 0 as "nothing right now" and sleeps.
   inline size_t readServerUsbAudio(uint8_t *buf, size_t maxBytes) {
-    if (!gUsbRunning || !gUsbPlayback) return 0;
+    // [usb-read-acquire] Acquire pairs with the release store in
+    // start/stop. If gUsbRunning is observed true, every object the
+    // read path dereferences (gUsbAudio, gUsbPlayback) is fully
+    // constructed and visible on this core.
+    if (!__atomic_load_n(&gUsbRunning, __ATOMIC_ACQUIRE) ||
+        !gUsbPlayback) {
+      return 0;
+    }
 
     // [usb-lifecycle-mutex] Non-blocking: if stopServerUsbAudio holds the
     // mutex mid-teardown, skip this read entirely. The audio task just
@@ -266,8 +379,13 @@
     if (!gUsbLifecycleMutex) return 0;
     if (xSemaphoreTake(gUsbLifecycleMutex, 0) != pdTRUE) return 0;
 
-    pollUsbAudioEvents();
-    size_t n = gUsbPlayback->read(buf, maxBytes);
+    // Re-check under the mutex: stop() may have run between the acquire
+    // load above and the take.
+    size_t n = 0;
+    if (__atomic_load_n(&gUsbRunning, __ATOMIC_ACQUIRE) && gUsbPlayback) {
+      pollUsbAudioEvents();
+      n = gUsbPlayback->read(buf, maxBytes);
+    }
     xSemaphoreGive(gUsbLifecycleMutex);
     return n;
   }
@@ -280,6 +398,9 @@
   // [usb-host-volume-single-tu] The gUsbHost* globals are defined in
   // EVDState.h so this branch and the library branch share one instance.
 
+  // [usb-noop-stubs] initUsbLifecycle() is a no-op here so the setup()
+  // call site compiles unconditionally.
+  inline void   initUsbLifecycle()    {}
   inline bool   startServerUsbAudio() {
     LOGE("USB audio unavailable: firmware built without the EspUsbDevice library");
     return false;

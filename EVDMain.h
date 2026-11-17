@@ -225,6 +225,12 @@ void setup() {
   // wiped the OTA spool on every power cycle.
   createSyncPrimitives();
 
+  // [usb-lifecycle-mutex] Create the USB lifecycle mutex here, alongside
+  // every other mutex and BEFORE the boot-source restore below calls
+  // startServerUsbAudio(). Idempotent; the no-lib branch defines a no-op
+  // stub so this compiles unconditionally.
+  initUsbLifecycle();
+
   // Random per-boot session identifier. Sent to players so they can detect
   // a server reboot/timestamp reset and discard any cached clock offset or
   // audio sequence-number baseline. See EVDConfig.h clock-sync docs.
