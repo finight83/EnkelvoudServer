@@ -608,6 +608,9 @@ inline void handleClockSyncRequests() {
           // reachable, independent of which transport happens to be
           // healthy.
           subscribers[slot].lastSeenMs = millis();
+          // A sync_req proves the node is reachable right now; without this
+          // two transient send failures mute it until the next 30 s heartbeat.
+          subscribers[slot].consecutiveSendFailures = 0;
           if (!subscribers[slot].hasCompletedClockSync) {
             subscribers[slot].hasCompletedClockSync = true;
             promoted = true;
