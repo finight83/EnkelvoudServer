@@ -88,10 +88,17 @@
   // Windows sends SET_CUR to the device and leaves the PCM untouched when a
   // hardware volume control is advertised, so we must apply it ourselves.
   static volatile int32_t gUsbGainQ15 = 32768;
+  // [0]=master, [1]=left, [2]=right. Windows may use either master or per-channel.
+  static int16_t gUsbChDb256[3]  = {0, 0, 0};
+  static bool    gUsbChMuted[3]  = {false, false, false};
 
   inline void updateUsbGain() {
-    if (gUsbHostMuted) { gUsbGainQ15 = 0; return; }
-    float db = (float)gUsbHostVolumeDb256 / 256.0f;
+    bool muted = gUsbChMuted[0] || (gUsbChMuted[1] && gUsbChMuted[2]);
+    gUsbHostMuted = muted;
+    if (muted) { gUsbGainQ15 = 0; return; }
+    int16_t side = gUsbChDb256[1] > gUsbChDb256[2] ? gUsbChDb256[1] : gUsbChDb256[2];
+    float db = ((float)gUsbChDb256[0] + (float)side) / 256.0f;
+    gUsbHostVolumeDb256 = (int16_t)(db * 256.0f);
     if (db >= 0.0f)        gUsbGainQ15 = 32768;
     else if (db <= -80.0f) gUsbGainQ15 = 0;
     else                   gUsbGainQ15 = (int32_t)(32768.0f * powf(10.0f, db / 20.0f));
@@ -108,24 +115,22 @@
 
       switch (ev.type) {
         case EspUsbAudioEventType::VolumeChanged:
-          if (ev.channel == 0) {
-            gUsbHostVolumeDb256      = ev.volumeDb256;
+          if (ev.channel < 3) {
+            gUsbChDb256[ev.channel]  = ev.volumeDb256;
             gUsbHostHasEverSetVolume = true;
             updateUsbGain();
-            LOGI("USB host volume: %.2f dB (raw %d)",
-                 (float)ev.volumeDb256 / 256.0f, (int)ev.volumeDb256);
-          } else {
-            LOGI("USB host volume (ch %u): %.2f dB (ignored for master gain)",
-                 (unsigned)ev.channel, (float)ev.volumeDb256 / 256.0f);
           }
+          LOGI("USB host volume (ch %u): %.2f dB (raw %d) -> gain %.1f%%",
+               (unsigned)ev.channel, (float)ev.volumeDb256 / 256.0f,
+               (int)ev.volumeDb256, (float)gUsbGainQ15 * 100.0f / 32768.0f);
           break;
         case EspUsbAudioEventType::MuteChanged:
-          if (ev.channel == 0) {
-            gUsbHostMuted            = ev.muted;
+          if (ev.channel < 3) {
+            gUsbChMuted[ev.channel]  = ev.muted;
             gUsbHostHasEverSetVolume = true;
             updateUsbGain();
-            LOGI("USB host mute: %s", ev.muted ? "on" : "off");
           }
+          LOGI("USB host mute (ch %u): %s", (unsigned)ev.channel, ev.muted ? "on" : "off");
           break;
         case EspUsbAudioEventType::SampleRateChanged:
           // The library tracks this internally. We do not use it: the
@@ -260,6 +265,7 @@
     gUsbHostMuted            = false;
     gUsbHostHasEverSetVolume = false;
     gUsbGainQ15              = 32768;
+    for (int i = 0; i < 3; ++i) { gUsbChDb256[i] = 0; gUsbChMuted[i] = false; }
 
     int16_t v = 0;
     bool    m = false;

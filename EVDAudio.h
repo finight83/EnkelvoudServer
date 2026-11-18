@@ -1470,8 +1470,8 @@ inline void audioEncodeTask(void *param) {
       static uint32_t lastThrottleMs = 0;
       if (millis() - lastThrottleMs > 10000) {
         lastThrottleMs = millis();
-        if (g_pendingComplexity < 0 && currentOpusComplexity > 0) {
-          g_pendingComplexity = currentOpusComplexity - 1;
+        if (g_pendingComplexity > 0) {
+          g_pendingComplexity--;
           LOGW("Encoder overrun detected! Dynamically dropping complexity to %d", g_pendingComplexity);
         }
       }
