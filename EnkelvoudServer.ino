@@ -1,6 +1,6 @@
 // ---- Versioning ------------------------------------------------------------
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.1.4" // TBT - Bug Fixes
+#define EVD_FW_VERSION "3.9.1.5" // Patched USB - 48khz misread and PC volume
 #endif
 #define FW_VERSION EVD_FW_VERSION
 
