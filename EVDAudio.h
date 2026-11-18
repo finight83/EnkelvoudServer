@@ -307,6 +307,13 @@ if (g_rateEstimatorNeedsReset) {
     rateFramesLostSeen = lostNow;
 
     double rawRate = (double)(rateMeasureFrames + lostInWin) * 1000.0 / (double)elapsed;
+    // The USB host clocks the stream at exactly the nominal rate; a reading
+    // far from it means our own reads stalled, not that the source changed.
+    // Trusting it made the resampler warp pitch and hunt (audible jitter).
+    if (serverInputSource == SRC_FROM_USB &&
+        fabs(rawRate - (double)SOURCE_SAMPLE_RATE) > (double)SOURCE_SAMPLE_RATE * 0.005) {
+        rawRate = (double)SOURCE_SAMPLE_RATE;
+    }
     rateMeasureStartMs = nowMs;
     rateMeasureFrames  = 0;
 
@@ -978,7 +985,7 @@ inline void setup_i2s_in() {
 inline void audioReadTask(void *param) {
   (void)param;
   LOGI("audioReadTask started on core %d", xPortGetCoreID());
-  static uint8_t readBuf[I2S_READ_CHUNK_BYTES];
+  alignas(4) static uint8_t readBuf[I2S_READ_CHUNK_BYTES];
 
   for (;;) {
     if (otaPauseAudio) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
@@ -1463,8 +1470,8 @@ inline void audioEncodeTask(void *param) {
       static uint32_t lastThrottleMs = 0;
       if (millis() - lastThrottleMs > 10000) {
         lastThrottleMs = millis();
-        if (g_pendingComplexity > 0) {
-          g_pendingComplexity--;
+        if (g_pendingComplexity < 0 && currentOpusComplexity > 0) {
+          g_pendingComplexity = currentOpusComplexity - 1;
           LOGW("Encoder overrun detected! Dynamically dropping complexity to %d", g_pendingComplexity);
         }
       }
