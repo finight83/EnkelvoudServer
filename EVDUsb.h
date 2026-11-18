@@ -13,16 +13,10 @@
 //  control endpoint; the library turns that into an EspUsbAudioEvent the
 //  sketch polls.
 //
-//  IMPORTANT: the sketch deliberately does NOT scale the returned buffer by
-//  the Feature Unit gain. Windows applies its own software gain to the PCM
-//  stream before transmitting it; multiplying by the hardware gain as well
-//  produced audible double-attenuation (anything below 100 % on the Windows
-//  slider was inaudible), so readServerUsbAudio() is passthrough.
-//
-//  The Feature Unit events are still polled and exposed as
-//  gUsbHostVolumeDb256 / gUsbHostMuted for diagnostics, but they do not
-//  modify the sample bytes. If a future firmware decides to take over gain
-//  management from Windows, this is the place to document that change.
+//  Because the device advertises a Feature Unit, Windows sends the slider
+//  position as SET_CUR and leaves the PCM at full scale. readServerUsbAudio()
+//  therefore applies the host volume/mute itself (gUsbGainQ15, dB -> linear,
+//  silent at -80 dB or below).
 //
 //  Two globals are exposed for diagnostics only:
 //
@@ -90,6 +84,19 @@
   // Called from readServerUsbAudio() on the audio task. Drains the library's
   // event queue and updates the two globals above. Cheap when there are no
   // events (one atomic load on the queue head).
+  // Linear gain (Q15) derived from the host's Feature Unit volume/mute.
+  // Windows sends SET_CUR to the device and leaves the PCM untouched when a
+  // hardware volume control is advertised, so we must apply it ourselves.
+  static volatile int32_t gUsbGainQ15 = 32768;
+
+  inline void updateUsbGain() {
+    if (gUsbHostMuted) { gUsbGainQ15 = 0; return; }
+    float db = (float)gUsbHostVolumeDb256 / 256.0f;
+    if (db >= 0.0f)        gUsbGainQ15 = 32768;
+    else if (db <= -80.0f) gUsbGainQ15 = 0;
+    else                   gUsbGainQ15 = (int32_t)(32768.0f * powf(10.0f, db / 20.0f));
+  }
+
   inline void pollUsbAudioEvents() {
     if (!gUsbAudio) return;
     EspUsbAudioEvent ev;
@@ -104,6 +111,7 @@
           if (ev.channel == 0) {
             gUsbHostVolumeDb256      = ev.volumeDb256;
             gUsbHostHasEverSetVolume = true;
+            updateUsbGain();
             LOGI("USB host volume: %.2f dB (raw %d)",
                  (float)ev.volumeDb256 / 256.0f, (int)ev.volumeDb256);
           } else {
@@ -115,6 +123,7 @@
           if (ev.channel == 0) {
             gUsbHostMuted            = ev.muted;
             gUsbHostHasEverSetVolume = true;
+            updateUsbGain();
             LOGI("USB host mute: %s", ev.muted ? "on" : "off");
           }
           break;
@@ -250,6 +259,7 @@
     gUsbHostVolumeDb256      = 0;
     gUsbHostMuted            = false;
     gUsbHostHasEverSetVolume = false;
+    gUsbGainQ15              = 32768;
 
     int16_t v = 0;
     bool    m = false;
@@ -385,6 +395,13 @@
     if (__atomic_load_n(&gUsbRunning, __ATOMIC_ACQUIRE) && gUsbPlayback) {
       pollUsbAudioEvents();
       n = gUsbPlayback->read(buf, maxBytes);
+      int32_t g = gUsbGainQ15;
+      if (n >= 2 && g < 32768 && gUsbHostHasEverSetVolume) {
+        int16_t *s = (int16_t *)buf;
+        size_t cnt = n / 2;
+        for (size_t i = 0; i < cnt; ++i)
+          s[i] = (int16_t)(((int32_t)s[i] * g) >> 15);
+      }
     }
     xSemaphoreGive(gUsbLifecycleMutex);
     return n;
