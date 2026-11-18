@@ -174,10 +174,10 @@ inline void serviceVolumePot() {
   static int      lastPrintPct = -1;
 
   uint32_t now = millis();
-  if (now - lastReadMs < 100) return;
+  if (now - lastReadMs < 25) return;
   lastReadMs = now;
 
-  const int N = 16;
+  const int N = 8;
   uint32_t acc = 0;
   for (int i = 0; i < N; ++i) acc += analogReadMilliVolts(pinVolumePot);
   float mv  = (float)acc / (float)N;
@@ -186,9 +186,9 @@ inline void serviceVolumePot() {
   if (pct > 100.0f) pct = 100.0f;
 
   // Asymmetric EMA: fast on real motion, slow on noise.
-  const float NOISE_BAND = 4.0f;
-  const float ALPHA_FAST = 0.60f;
-  const float ALPHA_SLOW = 0.05f;
+  const float NOISE_BAND = 1.5f;
+  const float ALPHA_FAST = 0.70f;
+  const float ALPHA_SLOW = 0.15f;
   if (smoothedPct < 0.0f) smoothedPct = pct;
   else {
     float delta = pct - smoothedPct;
