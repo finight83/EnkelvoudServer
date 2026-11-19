@@ -91,6 +91,9 @@
   // [0]=master, [1]=left, [2]=right. Windows may use either master or per-channel.
   static int16_t gUsbChDb256[3]  = {0, 0, 0};
   static bool    gUsbChMuted[3]  = {false, false, false};
+  // Volume applied on every connect: -20 dB = 10 % linear amplitude.
+  static const int16_t EVD_USB_INITIAL_VOLUME_DB256 = -20 * 256;
+  static uint32_t gUsbLastVolPollMs = 0;
 
   inline void updateUsbGain() {
     bool muted = gUsbChMuted[0] || (gUsbChMuted[1] && gUsbChMuted[2]);
@@ -104,8 +107,27 @@
     else                   gUsbGainQ15 = (int32_t)(32768.0f * powf(10.0f, db / 20.0f));
   }
 
+  // Re-reads the Feature Unit state directly, so a slider move still takes
+  // effect if its event was dropped or never queued. Throttled to 50 ms.
+  inline void refreshUsbVolumeState() {
+    uint32_t now = millis();
+    if (now - gUsbLastVolPollMs < 50) return;
+    gUsbLastVolPollMs = now;
+    bool changed = false;
+    for (int i = 0; i < 3; ++i) {
+      int16_t v = 0;
+      bool    m = false;
+      if (gUsbAudio->getVolume(v, EspUsbAudioDirection::Playback, (uint8_t)i) &&
+          v != gUsbChDb256[i]) { gUsbChDb256[i] = v; changed = true; }
+      if (gUsbAudio->getMute(m, EspUsbAudioDirection::Playback, (uint8_t)i) &&
+          m != gUsbChMuted[i]) { gUsbChMuted[i] = m; changed = true; }
+    }
+    if (changed) { gUsbHostHasEverSetVolume = true; updateUsbGain(); }
+  }
+
   inline void pollUsbAudioEvents() {
     if (!gUsbAudio) return;
+    refreshUsbVolumeState();
     EspUsbAudioEvent ev;
     // Cap the drain so a pathological flood cannot starve the read loop.
     for (int i = 0; i < 16 && gUsbAudio->pollEvent(ev); ++i) {
@@ -266,6 +288,24 @@
     gUsbHostHasEverSetVolume = false;
     gUsbGainQ15              = 32768;
     for (int i = 0; i < 3; ++i) { gUsbChDb256[i] = 0; gUsbChMuted[i] = false; }
+
+    // Start at 10% on every connect: set the Feature Unit so Windows reads it
+    // on enumeration, and mirror it into our gain. Master and per-channel
+    // gains add in updateUsbGain(), so use the master only when it exists.
+    {
+      const bool hasMaster = gUsbAudio->hasVolume(EspUsbAudioDirection::Playback, 0);
+      for (int i = 0; i < 3; ++i) {
+        if (hasMaster ? (i != 0) : (i == 0)) continue;
+        gUsbAudio->setMute(false, EspUsbAudioDirection::Playback, (uint8_t)i);
+        if (gUsbAudio->setVolume(EVD_USB_INITIAL_VOLUME_DB256,
+                                 EspUsbAudioDirection::Playback, (uint8_t)i))
+          gUsbChDb256[i] = EVD_USB_INITIAL_VOLUME_DB256;
+      }
+    }
+    gUsbHostHasEverSetVolume = true;
+    gUsbLastVolPollMs = 0;
+    updateUsbGain();
+    gUsbAudio->clearEvents();
 
     int16_t v = 0;
     bool    m = false;
