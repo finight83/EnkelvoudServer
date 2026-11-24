@@ -68,6 +68,17 @@ inline void setup_udp_transport() {
 static constexpr uint32_t SUB_DEAD_LASTSEEN_MS   = 7000UL;
 static constexpr uint8_t  SUB_FAILURE_SKIP_COUNT = 2;
 
+// [sub-stall-cooldown] How long a subscriber that just failed a send is left
+// alone before it is retried. This is the "drop the dead node in 3-4 s and
+// leave everyone else alone" contract: 1 s, 2 s, 4 s, then 8 s while the
+// failures keep coming. Kept well under SUB_DEAD_LASTSEEN_MS so a node that
+// reboots inside the window is re-admitted by the very next retry.
+static constexpr uint32_t SUB_STALL_COOLDOWN_MIN_MS = 1000UL;
+static constexpr uint32_t SUB_STALL_COOLDOWN_MAX_MS = 8000UL;
+
+// [wire-flag-unicast] AUDIO_HEADER_BYTES byte 3, bit 0. See udpSendTask().
+static constexpr uint8_t  AUDIO_FLAG_UNICAST = 0x01;
+
 inline void sendCtrlToSubscriber(const String &ip, const String &json) {
   if (WiFi.status() != WL_CONNECTED && !accessPointActive) return;
 
@@ -163,6 +174,9 @@ inline void udpSendTask(void *param) {
     uint8_t failures;
     bool synced;
     bool provisional;
+    // [sub-stall-cooldown] True when this slot's cooldown has expired and the
+    // flag still needs clearing under subsMutex. See the write block below.
+    bool cooldownDue;
   };
   static SubEntry snapBuf[MAX_UDP_SUBSCRIBERS];
   bool sendOk[MAX_UDP_SUBSCRIBERS];
@@ -238,7 +252,14 @@ inline void udpSendTask(void *param) {
     sendBuf[0]  = (uint8_t)( magic       & 0xFF);
     sendBuf[1]  = (uint8_t)((magic >> 8) & 0xFF);
     sendBuf[2]  = (uint8_t)AUDIO_PROTO_VERSION;
-    sendBuf[3]  = 0;
+    // [wire-flag-unicast]
+    // Audio is delivered by unicast (see [udp-disconnect-isolation]), so every
+    // node on the LAN receives every frame addressed to any node. The flag
+    // byte has been 0 since v2; bit 0 now marks a unicast delivery so the
+    // player can drop frames that were not addressed to it instead of
+    // decoding a second copy and desynchronising its own timeline. The
+    // server gates every send on the subscriber table, so this is always set.
+    sendBuf[3]  = AUDIO_FLAG_UNICAST;
     sendBuf[4]  = (uint8_t)( seq        & 0xFF);
     sendBuf[5]  = (uint8_t)((seq >>  8) & 0xFF);
     sendBuf[6]  = (uint8_t)((seq >> 16) & 0xFF);
@@ -283,11 +304,27 @@ inline void udpSendTask(void *param) {
         if (subscribers[i].consecutiveSendFailures >= SUB_FAILURE_SKIP_COUNT) {
           continue;
         }
+        // [sub-stall-cooldown] A node that has been skipped because its sends
+        // stalled is retried once per cooldown, NOT on every frame. Without
+        // this the retry itself is the stall: a node that was switched off at
+        // the wall sits in the ARP table as "incomplete", every sendto()
+        // blocks the pacer for the full ARP timeout, and the surviving nodes
+        // stutter for the whole detection window. Skipping it until the
+        // cooldown expires costs nothing (it gets no audio either way) and
+        // keeps the pacer's deadline for everyone else.
+        if (subscribers[i].cooldownUntilMs != 0 &&
+            (int32_t)(nowSnap - subscribers[i].cooldownUntilMs) < 0) {
+          statAudioCooldownSkips++;
+          continue;
+        }
         strncpy(snapBuf[nSubs].ip, subscribers[i].ip.c_str(),
                 sizeof(snapBuf[nSubs].ip) - 1);
         snapBuf[nSubs].ip[sizeof(snapBuf[nSubs].ip) - 1] = '\0';
         snapBuf[nSubs].compatible = subscribers[i].audioCompatible;
         snapBuf[nSubs].failures   = subscribers[i].consecutiveSendFailures;
+        snapBuf[nSubs].cooldownDue =
+            (subscribers[i].cooldownUntilMs != 0 &&
+             (int32_t)(nowSnap - subscribers[i].cooldownUntilMs) >= 0);
         snapBuf[nSubs].synced     = subscribers[i].hasCompletedClockSync;
         snapBuf[nSubs].provisional = subscribers[i].provisional;
         if (subscribers[i].audioCompatible) nCompatible++;
@@ -380,15 +417,46 @@ inline void udpSendTask(void *param) {
         if (!onlyAttempts[k])                anyFailure   = true;
         else if (snapBuf[si].failures > 0)   anyNeedReset = true;
       }
-      if (onlyN > 0 && (anyFailure || anyNeedReset)) {
+      // [sub-stall-cooldown] A cooldown is a MUTATION of subscriber state, so
+      // it has to be written under subsMutex — the gate at the top of this
+      // function reads it unlocked on the snapshot, which is only safe if the
+      // write is never lost. The block below used to run only on a failure or
+      // a reset, so a cooldown that had just EXPIRED was never cleared: the
+      // subscriber sat out one extra send after every cooldown, and the field
+      // stayed set while the node looked healthy. Detect it in the snapshot.
+      bool anyCooldownDue = false;
+      for (int k = 0; k < onlyN; k++) {
+        if (onlyAttempts[k] && snapBuf[onlyIdx[k]].cooldownDue) {
+          anyCooldownDue = true;
+          break;
+        }
+      }
+      if (onlyN > 0 && (anyFailure || anyNeedReset || anyCooldownDue)) {
         if (lockFor(subsMutex, 20)) {
           for (int k = 0; k < onlyN; k++) {
             int si = onlyIdx[k];
             int slot = findSubscriberLocked(snapBuf[si].ip);
             if (slot < 0) continue;
-            if (onlyAttempts[k]) subscribers[slot].consecutiveSendFailures = 0;
-            else if (subscribers[slot].consecutiveSendFailures < 255)
-              subscribers[slot].consecutiveSendFailures++;
+            if (onlyAttempts[k]) {
+              subscribers[slot].consecutiveSendFailures = 0;
+              subscribers[slot].cooldownUntilMs = 0;
+            } else if (snapBuf[si].cooldownDue) {
+              // Cooldown expired, this send still failed: keep the count so the
+              // back-off keeps growing. [sub-stall-cooldown]
+              subscribers[slot].cooldownUntilMs = 0;
+            } else {
+              if (subscribers[slot].consecutiveSendFailures < 255)
+                subscribers[slot].consecutiveSendFailures++;
+              // [sub-stall-cooldown] Exponential-ish back-off, capped. The
+              // first skip costs one ARP timeout (~2 s); every later one costs
+              // a few, so a node that comes back is picked up within a second
+              // or two while a node that is gone stops costing anything.
+              uint32_t cd = SUB_STALL_COOLDOWN_MIN_MS;
+              for (uint8_t f = 1; f < subscribers[slot].consecutiveSendFailures && f < 4; f++)
+                cd *= 2;
+              if (cd > SUB_STALL_COOLDOWN_MAX_MS) cd = SUB_STALL_COOLDOWN_MAX_MS;
+              subscribers[slot].cooldownUntilMs = millis() + cd;
+            }
           }
           unlockFor(subsMutex);
         }
@@ -445,9 +513,18 @@ inline void udpSendTask(void *param) {
           if (!attempted[si]) continue;
           int slot = findSubscriberLocked(snapBuf[si].ip);
           if (slot < 0) continue;
-          if (sendOk[si]) subscribers[slot].consecutiveSendFailures = 0;
-          else if (subscribers[slot].consecutiveSendFailures < 255)
-            subscribers[slot].consecutiveSendFailures++;
+          if (sendOk[si]) {
+            subscribers[slot].consecutiveSendFailures = 0;
+            subscribers[slot].cooldownUntilMs = 0;
+          } else {
+            if (subscribers[slot].consecutiveSendFailures < 255)
+              subscribers[slot].consecutiveSendFailures++;
+            uint32_t cd = SUB_STALL_COOLDOWN_MIN_MS;
+            for (uint8_t f = 1; f < subscribers[slot].consecutiveSendFailures && f < 4; f++)
+              cd *= 2;
+            if (cd > SUB_STALL_COOLDOWN_MAX_MS) cd = SUB_STALL_COOLDOWN_MAX_MS;
+            subscribers[slot].cooldownUntilMs = millis() + cd;
+          }
         }
         unlockFor(subsMutex);
       }

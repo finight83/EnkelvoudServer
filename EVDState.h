@@ -165,6 +165,26 @@ uint32_t currentSourceA2dpDisconnecting   = 0;
 volatile bool          settingsDirty      = false;
 volatile unsigned long settingsDirtySince = 0;
 
+// [arm-settings-flush] Arm the deferred NVS writer from any core. Always
+// re-stamps settingsDirtySince so the MAX_DEFER_MS deadline in loop() runs
+// from the LAST change, and always re-asserts the flag (a flush that is in
+// flight clears it between the arm and the next tick). Every settings writer
+// should call this instead of assigning the two globals by hand.
+inline void armSettingsFlush() {
+  settingsDirtySince = millis();
+  settingsDirty      = true;
+}
+
+// [audio-buffer-deferred-nvs] Set by /api/audio/encoding when the live buffer
+// changes. The handler used to call saveEncoderModeSettings() directly from
+// the AsyncTCP task, which is a flash erase inside a slider drag. Instead it
+// records WHICH mode the change belongs to (the mode current at request time,
+// not at flush time — that was the original lost-setting bug) and loop()
+// persists it through the same deferred writer as everything else.
+volatile bool          g_bufferDirtyValid = false;
+volatile uint8_t       g_bufferDirtyMode  = 0;
+volatile unsigned long g_bufferDirtyAtMs  = 0;
+
 // [core-split-flags] Cross-core request flags. Set by handleEncoderRecreate()
 // (core 0), drained by audioProcessingTask() (core 1) at the top of its loop.
 // Volatile bool: single aligned byte store/load, atomic on ESP32-S3.
@@ -363,6 +383,11 @@ volatile uint32_t statLatencySumMs           = 0;
 volatile uint32_t statLatencyCount           = 0;
 volatile int      subscriberCount            = 0;
 volatile uint32_t statUdpErrors              = 0;
+// [uart-line-drops] Lines discarded by handleReceiverLink() because they did
+// not fit RX_LINE_MAX. Non-zero means the source is emitting something longer
+// than this build expects (BT_JSON is the only line that can) and the
+// dashboard will show a stale device list until the buffers are re-matched.
+volatile uint32_t statUartLineDrops          = 0;
 volatile int32_t  statDriftPpm               = 0;
 volatile float    statMeasuredInputHz  = 0.0f;
 volatile uint32_t statSyncRequestsServed      = 0;
@@ -387,6 +412,11 @@ volatile uint32_t statAudioSyncPending        = 0;
 // tell "old firmware is being excluded" (real incompatibility) from
 // "a node's first-heartbeat handshake is still in progress" (transient).
 volatile uint32_t statAudioProvisionalSkips   = 0;
+// [sub-stall-cooldown] Frames not even attempted because the subscriber
+// was inside its post-failure cooldown. Expected to climb when a node is
+// powered off; it is the count that used to be paid for in stutter on
+// every OTHER node.
+volatile uint32_t statAudioCooldownSkips      = 0;
 // [udp-send-liveness] Incremented once per udpSendTask loop iteration.
 // Healthy value climbs ~50/s when audio flows. If it is static while
 // statOpusDropped climbs, udpSendTask is stuck (see the recording-2 stall).

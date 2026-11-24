@@ -54,12 +54,23 @@ inline void handleReceiverLink() {
 
   // Fixed-size char buffer, no String heap churn. The previous version
   // ...
-  // [ram-save-rx-line] Was 2048. BT_JSON with 25 devices fits easily;
-  // SRCSTAT and LOG| are shorter still. Overlong lines are dropped
-  // (rxLen reset at the bottom of this function) rather than truncated,
-  // so an oversized packet simply costs one dropped update, never
-  // corruption. Saves 1 KB DRAM.
-  static char   rxLine[1024];
+  // [ram-save-rx-line] Was 2048, then 1024 to save 1 KB DRAM.
+  //
+  // [rx-line-cross-repo] 1024 was WRONG: the source board builds its
+  // BT_JSON payload in a 1024-byte buffer (EnkelvoudSource/EVDBTBluetooth.h,
+  // `out[1024]`) and prefixes it with the 8-byte "BT_JSON|" tag. The longest
+  // line it can legally send is therefore 1031 bytes + '\n', which never
+  // fitted in a 1024-byte buffer — every BT_JSON line was silently dropped
+  // and the dashboard's paired-device list froze at its last good value.
+  // Size this from the prefix + the peer's payload, not from a guess.
+  // Overlong lines are still dropped (rxLen reset below) rather than
+  // truncated, so an oversized packet costs one dropped update, never
+  // corruption.
+  static constexpr size_t BT_JSON_PREFIX_LEN = 8;      // "BT_JSON|"
+  static constexpr size_t SOURCE_BT_JSON_PAYLOAD_MAX = 1024;  // peer's out[]
+  static constexpr size_t RX_LINE_MAX =
+      BT_JSON_PREFIX_LEN + SOURCE_BT_JSON_PAYLOAD_MAX + 8;   // + '\n', NUL, slack
+  static char   rxLine[RX_LINE_MAX];
   static size_t rxLen = 0;
 
   while (receiverUart.available()) {
@@ -142,9 +153,12 @@ inline void handleReceiverLink() {
       if (rxLen < sizeof(rxLine) - 1) {
         rxLine[rxLen++] = c;
       } else {
-        // Overlong line (no newline in 2047 chars). Drop rather than
-        // corrupt state; a well-behaved source never emits one.
+        // Overlong line (no newline within RX_LINE_MAX chars). Drop rather
+        // than corrupt state; a well-behaved source never emits one. Counted
+        // so "the device list froze" is diagnosable from /api/stats instead
+        // of looking like a dead UART.
         rxLen = 0;
+        statUartLineDrops++;
       }
     }
   }
@@ -860,18 +874,37 @@ inline void handleApiConfig(AsyncWebServerRequest *request, uint8_t *data,
     changed = true;
   }
   if (input.containsKey("audioBufferMs") && input["audioBufferMs"].is<int>()) {
-    audioBufferMs = (uint16_t)(int)input["audioBufferMs"];
+    // [audio-buffer-slider-clamp] The slider POSTs continuously while it is
+    // dragged (250 ms debounce in EVDCTRL.h), and the range attribute is not
+    // a validation. Clamp to the same floor/ceiling /api/config enforces so
+    // a stale cached page cannot set a buffer the players reject.
+    {
+      int bmv = (int)input["audioBufferMs"];
+      if (bmv < AUDIO_BUFFER_MIN_MS) bmv = AUDIO_BUFFER_MIN_MS;
+      if (bmv > AUDIO_BUFFER_MAX_MS) bmv = AUDIO_BUFFER_MAX_MS;
+      audioBufferMs = (uint16_t)bmv;
+    }
     // [audio-buffer-persist-mode-safe] The deferred loop() writer only
     // persists the mode that is CURRENT at flush time (up to 30 s later),
     // so a buffer change followed by a mode switch loses the change at
     // reboot: captureLiveIntoMode(OLD) leaves the change in g_modeSettings
     // but the flush writes the NEW mode's key, and enc_<old>_buf is never
-    // updated. Persist immediately. OTA gate above already excluded the
-    // flash-contention window. Cost: one NVS sector (~100 ms) on a rare
-    // user action; the alternative is a silently lost setting.
+    // updated.
+    //
+    // [audio-buffer-deferred-nvs] The fix for that was to write NVS
+    // synchronously from this HTTP handler — one 4 KB sector erase (~100 ms
+    // of cache stall, WiFi ACKs missed) PER SLIDER EVENT, i.e. 10-30 times
+    // during one drag. Instead: stamp the change into the mode that is
+    // current NOW (that is what made the old code correct) and let the
+    // deferred writer persist it. g_bufferDirtyMode is captured here so the
+    // flush writes the RIGHT mode's key even if the user switches modes
+    // before it runs.
     ModeIdx cm = (ModeIdx)playbackModeIdx;
     g_modeSettings[cm].bufferMs = (int32_t)audioBufferMs;
-    saveEncoderModeSettings(cm);
+    g_bufferDirtyMode   = (uint8_t)cm;
+    g_bufferDirtyValid  = true;
+    g_bufferDirtyAtMs   = millis();
+    armSettingsFlush();
     changed = true;
   }
   if (input.containsKey("serverName") && input["serverName"].is<const char*>()) {
@@ -992,7 +1025,16 @@ inline void handleApiSourceBridge(AsyncWebServerRequest *request, uint8_t *data,
     }
     // Still forward to the source board so its log reflects the change.
     sendReceiverSourceCommand("USB");
-    LOGI("Source -> USB (server-side UAC device active)");
+    // [source-select-persist] Persist the boot default the moment the change
+    // is ACCEPTED, not from a dashboard-side debounce. The old path relied on
+    // EVDCTRL.h POSTing defaultSource 6 s later, which never ran if the tab
+    // was closed, the phone slept, or the user rebooted first — and then the
+    // dashboard came back up showing BT while the USB device was already
+    // streaming. armSettingsFlush() is the same deferred writer every other
+    // setting uses, so this costs no flash write from the HTTP task.
+    bootSourceIdx = 2;                 // USB
+    armSettingsFlush();
+    LOGI("Source -> USB (server-side UAC device active), boot default persisted");
     request->send(200, "application/json",
                   "{\"ok\":true,\"source\":\"USB\",\"transport\":\"local-usb\"}");
     return;
@@ -1008,10 +1050,21 @@ inline void handleApiSourceBridge(AsyncWebServerRequest *request, uint8_t *data,
     // [src-assign-mutex] setReceiverSource() already writes
     // lastReceiverSource under uartMutex. The old extra unsynchronized
     // assignment raced SRCSTAT parsing and could tear the String buffer.
-    if (ok) request->send(200, "application/json", resp);
-    else    request->send(502, "application/json",
-                         String("{\"ok\":false,\"bridgeHttp\":") + String(code) +
-                         ",\"receiver\":" + resp + "}");
+    if (ok) {
+      // [source-select-persist] Same reasoning as the USB branch above: the
+      // accepted source becomes the boot default, through the shared deferred
+      // NVS writer. AUX is stored as AUX (the dashboard must show what was
+      // chosen); the source board reports back "AUX not implemented" through
+      // /api/source/info so the operator sees why it is silent.
+      bootSourceIdx = bootSourceNameToIdx(source);
+      armSettingsFlush();
+      LOGI("Source -> %s accepted, boot default persisted", source.c_str());
+      request->send(200, "application/json", resp);
+    } else {
+      request->send(502, "application/json",
+                    String("{\"ok\":false,\"bridgeHttp\":") + String(code) +
+                    ",\"receiver\":" + resp + "}");
+    }
     return;
   }
 

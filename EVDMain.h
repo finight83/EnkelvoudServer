@@ -395,6 +395,20 @@ void setup() {
     }
   } else {
     sendReceiverSourceCommand(String(bootSourceCStr()));
+    // [boot-source-honest] BT and AUX both arrive over the source board's
+    // I2S link, so serverInputSource must say so. Without this it keeps its
+    // static initialiser and the first /api/state poll after boot reports
+    // the wrong input path until something writes it.
+    serverInputSource = SRC_FROM_I2S;
+  }
+  // [boot-source-broadcast]
+  // The restored source is the authoritative answer for the whole session, so
+  // tell the players before the first frame goes out. Otherwise a node that
+  // came up while the server was mid-boot shows the default source until its
+  // next 30 s heartbeat, which is exactly the "dashboard says BT but it is
+  // playing USB" report.
+  if (bootSourceIdx == 2 && serverInputSource == SRC_FROM_USB) {
+    broadcastNodeConfig();
   }
   setup_i2s_in();
 
@@ -623,6 +637,20 @@ void loop() {
             // and re-persists the mutation. Redundant save is harmless.
             if (settingsDirtySince != armedSince && !settingsDirty) {
                 settingsDirty = true;
+            }
+
+            // [audio-buffer-deferred-nvs] Persist the buffer change that
+            // /api/audio/encoding recorded, into the mode it belongs to. Same
+            // quiet-window gate as everything else, so the flash erase never
+            // lands inside a slider drag or an OTA.
+            if (g_bufferDirtyValid && (now - g_bufferDirtyAtMs) >= 1500) {
+                uint8_t m = g_bufferDirtyMode;
+                g_bufferDirtyValid = false;
+                if (m < MODE_COUNT) {
+                    saveEncoderModeSettings((ModeIdx)m);
+                    LOGI("Audio buffer %u ms persisted for mode %s",
+                         (unsigned)audioBufferMs, modeIdxToName((ModeIdx)m));
+                }
             }
         }
     }

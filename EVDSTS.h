@@ -630,10 +630,25 @@ inline void handleApiStats(AsyncWebServerRequest *request) {
   body += String((unsigned)statAudioProvisionalSkips);
   body += ",\"audioSyncPending\":";
   body += String((unsigned)statAudioSyncPending);
+  // [uart-line-drops] >0 means a receiver-UART line was too long for
+  // RX_LINE_MAX and was discarded (see EVDPlayers.h). The only line that can
+  // exceed it is BT_JSON, so a rising value here is the fingerprint of "the
+  // dashboard's paired-device list stopped updating".
+  body += ",\"uartLineDrops\":";
+  body += String((unsigned)statUartLineDrops);
+  // [sub-stall-cooldown] Frames skipped because a node was inside its
+  // post-failure cooldown. This is the counter that used to be paid for in
+  // stutter on the surviving nodes.
+  body += ",\"audioCooldownSkips\":";
+  body += String((unsigned)statAudioCooldownSkips);
   body += ",\"usbBytesLastWin\":";
   body += String((unsigned)statUsbBytesLast5s);
+  // [server-input-source-honest] This used to report USB or, for everything
+  // else, the literal "I2S" — so a DLNA stream claimed to be the I2S input.
+  // Report the real producer; the dashboard prints this string verbatim.
   body += ",\"serverInputSource\":\"";
-  body += (serverInputSource == SRC_FROM_USB) ? "USB" : "I2S";
+  body += (serverInputSource == SRC_FROM_USB)     ? "USB"     :
+          (serverInputSource == SRC_FROM_NETWORK) ? "NETWORK" : "I2S";
   body += "\",\"streaming\":{";
   body += "\"i2sBytesLast5s\":";
   body += String((unsigned)statI2sBytesLast5s);

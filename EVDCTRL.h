@@ -690,11 +690,12 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
         <div class="enc-card">
           <h3>Encoder Settings</h3>
-          <div class="enc-field auto" data-field="complexity">
+          <!-- [complexity-manual] No lock button: complexity is never derived
+               from anything else, so there is nothing to unlock from. -->
+          <div class="enc-field manual" data-field="complexity">
             <span class="enc-label">Complexity (0–10)</span>
             <span class="enc-value" id="enc-complexity-val">8</span>
             <input type="number" class="enc-input" id="enc-complexity-in" min="0" max="10" step="1" value="8">
-            <button type="button" class="enc-lock" id="enc-complexity-lock" data-field="complexity" title="Unlock to override">🔓</button>
           </div>
           <div class="enc-field auto" data-field="vbr">
             <span class="enc-label">Variable Bitrate (VBR)</span>
@@ -1908,14 +1909,15 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       }
     };
 
+    // [complexity-manual]
+    // Complexity is NOT derived from the bitrate any more. It used to be
+    // recomputed here (kbps<48 -> 5, <80 -> 7, <128 -> 8, else 10) and pushed
+    // over whatever the operator had chosen, so a value that was set by hand
+    // silently slid back down as soon as the bitrate slider moved. Complexity
+    // now only changes when its own field changes: by the operator, or by a
+    // preset loaded from the server.
     function computeSuggestions(kbps) {
-      var complexity;
-      if (kbps < 48)       complexity = 5;
-      else if (kbps < 80)  complexity = 7;
-      else if (kbps < 128) complexity = 8;
-      else                 complexity = 10;
       return {
-        complexity:    complexity,
         vbr:           true,
         vbrConstraint: true,
         signal:        'music',
@@ -1977,6 +1979,10 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       var sugg = computeSuggestions(encState.targetBitrate);
       for (var field in encState.fields) {
         if (!encState.fields.hasOwnProperty(field)) continue;
+        // [complexity-manual] computeSuggestions() no longer returns a
+        // complexity, so this guard is what stops `undefined` being written
+        // into the field if the map ever gains a key again.
+        if (!(field in sugg)) continue;
         if (!encState.fields[field].locked) encState.fields[field].value = sugg[field];
       }
       renderEncFields();
@@ -1987,7 +1993,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       encState.fields[field].locked = !encState.fields[field].locked;
       if (!encState.fields[field].locked) {
         var sugg = computeSuggestions(encState.targetBitrate);
-        encState.fields[field].value = sugg[field];
+        if (field in sugg) encState.fields[field].value = sugg[field];
       }
       renderEncFields();
     }
@@ -2105,6 +2111,8 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       for (var field in encState.fields) {
         if (!encState.fields.hasOwnProperty(field)) continue;
         (function(f){
+          // [complexity-manual] The complexity field has no lock button any
+          // more; this is null for it and the handler is simply not attached.
           var lockEl = $('enc-' + f + '-lock');
           if (lockEl) lockEl.addEventListener('click', function(){ toggleEncLock(f); encSendRealtime(); });
           var inEl = $('enc-' + f + '-in');

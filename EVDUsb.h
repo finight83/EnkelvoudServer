@@ -401,21 +401,15 @@
   }
 
   // ---- readServerUsbAudio -------------------------------------------------
-  // Pulls PCM from the UAC playback stream. Polls the Feature Unit event
-  // queue so host volume/mute changes are visible in the dashboard's
-  // diagnostics, but does NOT scale the returned samples: Windows already
-  // applies its software gain before transmitting, so applying it here
-  // again double-attenuates the stream. Passthrough is what matches the
-  // user's expectation of the Windows slider.
+  // [usb-volume-single-authority] Pulls PCM from the UAC playback stream and
+  // APPLIES the host's volume/mute here.
   //
-  // The caller (audioReadTask) treats 0 as "nothing right now" and sleeps.
-  // ---- readServerUsbAudio -------------------------------------------------
-  // Pulls PCM from the UAC playback stream. Polls the Feature Unit event
-  // queue so host volume/mute changes are visible in the dashboard's
-  // diagnostics, but does NOT scale the returned samples: Windows already
-  // applies its software gain before transmitting, so applying it here
-  // again double-attenuates the stream. Passthrough is what matches the
-  // user's expectation of the Windows slider.
+  // This file advertises a UAC Feature Unit volume control, so Windows sends
+  // SET_CUR and leaves the PCM at full scale — it does not attenuate in
+  // software when a hardware control exists. If we did not scale, the
+  // Windows slider would do nothing. (An earlier comment here claimed the
+  // opposite and made "USB is 20 dB quiet / USB ignores the slider" a coin
+  // flip to debug; see the file header for the single correct model.)
   //
   // The caller (audioReadTask) treats 0 as "nothing right now" and sleeps.
   inline size_t readServerUsbAudio(uint8_t *buf, size_t maxBytes) {

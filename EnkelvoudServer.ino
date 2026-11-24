@@ -269,6 +269,18 @@ static const char *SETTINGS_VERSION = "v2.0.7";
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include "opus.h"
+// [usb-lib-detect] Unconditional include of the UAC library so arduino-cli
+// can resolve it (it only scans the sketch's own #include lines). The CODE in
+// EVDUsb.h is still guarded on EVD_HAS_USB_DEVICE_LIB; this just makes the
+// header visible when it exists. A machine without it still compiles the
+// no-library fallback path.
+#if defined(__has_include)
+  #if __has_include(<EspUsbDevice.h>)
+    #include <EspUsbDevice.h>
+  #endif
+#else
+  #include <EspUsbDevice.h>
+#endif
 
 // ============================================================================
 //  MERGED FROM EVDProtocolCompat.h
@@ -415,11 +427,19 @@ const char *default_ap_password       = "";
 #define PENDING_MAX_FRAMES 4096
 
 // ---- USB Audio Class -------------------------------------------------------
-#if 1
-  #define EVD_HAS_USB_DEVICE_LIB 1
+// [usb-lib-detect] Was a literal `#if 1`, so the fallback branch below was
+// dead code and the no-library stubs in EVDUsb.h could never be selected. A
+// build on a machine without EspUsbDevice therefore failed at LINK time
+// instead of degrading to "USB disabled, everything else works".
+#if defined(__has_include)
+  #if __has_include(<EspUsbDevice.h>)
+    #define EVD_HAS_USB_DEVICE_LIB 1
+  #else
+    #define EVD_HAS_USB_DEVICE_LIB 0
+    #pragma message("EspUsbDevice.h not found: USB audio source is disabled in this build")
+  #endif
 #else
-  #define EVD_HAS_USB_DEVICE_LIB 0
-  #pragma message("EspUsbDevice.h not found: USB audio source is disabled in this build")
+  #define EVD_HAS_USB_DEVICE_LIB 1
 #endif
 
 #define EVD_USB_VID 0x303a
@@ -501,6 +521,12 @@ struct Subscriber {
   // first real registration. Used by udpSendTask() to distinguish a
   // transient handshake from a genuinely old/incompatible firmware.
   bool provisional                    = false;
+  // [sub-stall-cooldown] millis() until which this slot must NOT be sent to
+  // again after a failed send. 0 = no cooldown. See udpSendTask() in
+  // EVDUDP.h: retrying a node whose ARP entry is incomplete costs the pacer
+  // a full ARP timeout (~2 s) PER ATTEMPT, which is what makes every other
+  // node stutter when one node is switched off at the wall.
+  uint32_t cooldownUntilMs            = 0;
 };
 
 struct PlayerNode {
