@@ -51,7 +51,7 @@ inline void setup_udp_transport() {
 // keeps the filtering logic in applyCtrlJson() working unchanged.
 //
 // This helper is called from two different cores:
-//   - sendAuthoritativeTimeSync -> clockSyncTask (Core 1, every 30 s)
+//   - sendAuthoritativeTimeSync -> clockSyncTask (Core 0, every 30 s)
 //   - broadcastNodeConfig      -> AsyncWebServer task (Core 0)
 //   - sendZoneConfigToIp       -> AsyncWebServer task (Core 0)
 //   - handlePlayerRegistration -> AsyncWebServer task (Core 0)
@@ -283,7 +283,7 @@ inline void udpSendTask(void *param) {
     // A failed 30 ms subsMutex acquisition leaves nSubs == 0 and drops the
     // whole frame for every subscriber — a clean 20 ms click. subsMutex is
     // held briefly by AsyncTCP registration/heartbeat/broadcastNodeConfig
-    // (Core 0) and by clockSyncTask (Core 1, pri 4, HIGHER than this task's
+    // (Core 0) and by clockSyncTask (Core 0, pri 3, EQUAL to this task's
     // pri 3, so it blocks us from preempting). A single String assign inside
     // findOrCreateSubscriberLocked() while AsyncTCP happens to be mid-alloc
     // is enough to exceed 30 ms. Fix: cache the last good snapshot and use
@@ -549,7 +549,7 @@ inline void udpSendTask(void *param) {
 // ---- Clock sync (request/response, UDP, CLOCK_SYNC_UDP_PORT) ---------------
 // See the wire-format doc block in EVDConfig.h for the JSON request/response
 // shape and the RTT/offset math the player performs with it. This handler
-// runs only from clockSyncTask() (Core 1, priority 4, single-threaded with
+// runs only from clockSyncTask() (Core 0, priority 3, single-threaded with
 // itself), so it needs no mutex around clockSyncUdp - unlike ctrlUdp,
 // nothing else ever touches this socket. clockSyncTask() polls it every
 // ~1 ms (vTaskDelay(1)); that is the dominant source of server-side jitter

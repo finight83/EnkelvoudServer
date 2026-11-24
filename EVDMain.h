@@ -369,8 +369,13 @@ void setup() {
   // serial log at boot. Without this check, an out-of-heap failure here
   // causes every player to fall back to millis()-based playout with no
   // diagnostic — the operator sees "green dashboard, audio behind".
+  // [core-assign-clocksync] pri 4 -> pri 3. At pri 4 it outranked audioRead,
+  // and it wakes every 5 ms purely to poll for a request that arrives ~1.6x
+  // per second. There is no path by which it needs to preempt capture; the
+  // 5 ms poll interval already dominates its RTT error, and that error is
+  // absorbed by the node's min-RTT-of-8 filter.
   BaseType_t csRc = xTaskCreatePinnedToCore(clockSyncTask, "ClockSync",
-                                            3072, NULL, 4, NULL, 0);
+                                            3072, NULL, 3, NULL, 0);
   if (csRc != pdPASS) {
     LOGE("FAILED to create clockSyncTask (rc=%d) — players will fall back "
          "to local millis() playout and drift behind live", (int)csRc);
