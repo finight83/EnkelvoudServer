@@ -1324,9 +1324,10 @@ inline void audioProcessingTask(void *param) {
 
 // ---- Audio encode task (Core 0) -------------------------------------------
 // Runs ONLY opus_encode() and the encoder-related controls (complexity,
-// bitrate/VBR/signal, sample-rate re-create). Everything else lives on
-// core 1. On this core the encoder competes only with the IDF WiFi/lwIP
-// tasks (priority 18+) — when WiFi is quiet, encode gets a full core.
+// bitrate/VBR/signal, sample-rate re-create). On this core it competes only
+// with audioRead (pri 6), which blocks in i2s_read() for whole chunks and is
+// idle in between. No WiFi, no lwIP, no flash writes, no HTTP - that is what
+// makes a 20 ms encode budget achievable.
 inline void audioEncodeTask(void *param) {
   (void)param;
   LOGI("audioEncodeTask started on core %d", xPortGetCoreID());
@@ -1521,20 +1522,23 @@ inline void setup_queues_and_tasks() {
 
   BaseType_t rc;
 
-  // ---- Core 0: audio pipeline + clock sync + loop() + WiFi + AsyncTCP ---
-  // ---- Core 1: Opus encoder ONLY --------------------------------------
-  // [encoder-sole-occupant]
-  // Every task except audioEncodeTask now runs on Core 0:
-  //   audioRead    pri 4   (I2S DMA drain)
-  //   clockSync    pri 4   (UDP sync responder, see EVDMain.h)
+  // ---- Core 0: pacer + processing + web + WiFi --------------------------
+  // ---- Core 1: capture + Opus encode (the two audio-critical tasks) -----
+  // [core-assign-audioread]
+  //
+  // Core 0 (highest -> lowest):
+  //   WiFi/lwIP    pri 18-23 (system)
   //   udpSend      pri 3   (UDP pacer)
+  //   clockSync    pri 3   (UDP sync responder, see EVDMain.h)
   //   audioProc    pri 2   (resample + quiet + volume)
+  //   dlnaSsdp     pri 2   (SSDP listener)
+  //   dlnaFetch    pri 2   (HTTP fetch — blocking socket I/O, must NOT be on core 1)
   //   loop()       pri 1   (Arduino default — discovery, NVS flush, pot)
   //   AsyncTCP     pri 1   (per build_opt.h)
-  //   WiFi/lwIP    pri 18-23 (system — highest in the system)
   //
-  // Core 1 has exactly ONE task:
-  //   audioEncode  pri 5
+  // Core 1 — only these two, ever:
+  //   audioRead    pri 6   (I2S/USB capture - blocks in i2s_read() most of the time)
+  //   audioEncode  pri 5   (opus_encode only)
   //
   // RATIONALE: only the encoder is latency-critical. Once opus_encode()
   // is called it must return within ~20 ms (one frame period) or the
@@ -1575,10 +1579,25 @@ inline void setup_queues_and_tasks() {
   // it silently.
   //
   // Priority order on Core 0 (highest → lowest):
-  //   WiFi(23) → lwIP(18) → audioRead(4) = clockSync(4) → udpSend(3) →
-  //   audioProc(2) → loop(1) = AsyncTCP(1)
-  // On Core 1: audioEncode(5) only.
-  rc = xTaskCreatePinnedToCore(audioReadTask, "audioRead", 4096, nullptr, 4, nullptr, 0);
+  //   WiFi(23) → lwIP(18) → udpSend(3) = clockSync(3) → audioProc(2) →
+  //   loop(1) = AsyncTCP(1)
+  // On Core 1: audioRead(6) → audioEncode(5).
+  //
+  // [core-assign-audioread] audioRead moved from core 0/pri 4 to core 1/pri 6.
+  //
+  // It is the only task in the system that can lose IRREPLACEABLE data. A late
+  // udpSend costs latency, a late audioProc costs a frame the pending buffer
+  // absorbs, but a starved audioRead costs I2S samples that never existed — no
+  // downstream buffer can recover them. On core 0 it sat BELOW WiFi (pri 23)
+  // and lwIP (pri 18), so any WiFi burst longer than the 42.6 ms DMA ring lost
+  // audio permanently.
+  //
+  // On core 1 it outranks the encoder (pri 5) but does not starve it:
+  // i2s_read() blocks for a whole chunk (256 samples = 5.3 ms) and the task is
+  // idle in between, so the encoder still gets the core for the ~1-2 ms of a
+  // 20 ms frame period that it actually needs. If this ever does hurt the
+  // encoder, statEncodePeakUsThisSec climbs — that is the measurement to watch.
+  rc = xTaskCreatePinnedToCore(audioReadTask, "audioRead", 4096, nullptr, 6, nullptr, 1);
   if (rc != pdPASS) LOGE("FAILED to create audioReadTask (rc=%d)", (int)rc);
 
   rc = xTaskCreatePinnedToCore(udpSendTask, "udpSend", 8192, nullptr, 3, nullptr, 0);
@@ -1587,11 +1606,12 @@ inline void setup_queues_and_tasks() {
   rc = xTaskCreatePinnedToCore(audioProcessingTask, "audioProc", 8192, nullptr, 2, nullptr, 0);
   if (rc != pdPASS) LOGE("FAILED to create audioProcessingTask (rc=%d)", (int)rc);
 
-  // [encoder-sole-occupant] Core 1: audioEncode only.
+  // [core-assign-audioread] Core 1: audioRead(6) + audioEncode(5). Nothing
+  // else may be added to this core - see the rationale block above.
   rc = xTaskCreatePinnedToCore(audioEncodeTask, "audioEncode", 8192, nullptr, 5, nullptr, 1);
   if (rc != pdPASS) LOGE("FAILED to create audioEncodeTask (rc=%d)", (int)rc);
 
-  LOGI("Tasks created: audioRead(c0,p4) udpSend(c0,p3) audioProc(c0,p2) "
-       "clockSync(c0,p4) loop(c0) | audioEncode(c1,p5) ALONE on core 1 | "
-       "WiFi+lwIP+AsyncTCP on c0");
+  LOGI("Tasks created: udpSend(c0,p3) audioProc(c0,p2) clockSync(c0,p3) "
+       "loop(c0) dlnaSsdp(c0,p2) dlnaFetch(c0,p2) | "
+       "audioRead(c1,p6) audioEncode(c1,p5) | WiFi+lwIP+AsyncTCP on c0");
 }

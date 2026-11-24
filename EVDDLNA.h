@@ -394,11 +394,23 @@ inline void dlnaStartFetch() {
   dlnaFetchStop = false;
   dlnaFetchRunning = true;
   g_rateEstimatorNeedsReset = true;
-  // Core 1: alongside audioEncode (pri 5). We are pri 2, so encode always
-  // wins. HTTP reads are blocking but yield via vTaskDelay(1) each loop.
+  // [core-assign-dlnafetch] Core 0, NOT core 1.
+  //
+  // This task used to be pinned to core 1 next to audioEncode, on the argument
+  // that "we are pri 2, so encode always wins". That argument is about
+  // SCHEDULING and it is false for the thing that actually matters here:
+  // contention. The fetch does blocking WiFiClient I/O (10 s socket timeout,
+  // 8 s header deadline) and String reallocs inside its read loop. lwIP's own
+  // tasks live on core 0, so every socket operation is a cross-core handoff
+  // while the cache/bus work still lands on core 1 — and ENCODE_QUEUE_LEN is 4
+  // frames (80 ms), which is the entire tolerance for a core-1 stall.
+  // Priority cannot preempt a stalled instruction fetch.
+  //
+  // On core 0 it has a 320 ms queue downstream (RAW_QUEUE_LEN 16 x 20 ms) and
+  // audioProc is sized to absorb exactly this kind of jitter.
   BaseType_t rc = xTaskCreatePinnedToCore(
       dlnaFetchTaskFn, "dlnaFetch", 6144, nullptr, 2,
-      &dlnaFetchTaskHandle, 1);
+      &dlnaFetchTaskHandle, 0);
   if (rc != pdPASS) {
     LOGE("DLNA: failed to start fetch task (rc=%d)", (int)rc);
     dlnaFetchTaskHandle = nullptr;
