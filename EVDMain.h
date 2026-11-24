@@ -299,6 +299,23 @@ void setup() {
       } else {
         LOGW("LittleFS: format failed; OTA spool will stay unavailable");
       }
+    } else if (!LittleFS.begin(false)) {
+      // [spool-remount-after-layout-change] fs_formatted lives in NVS, which
+      // survives a reflash with a different partitions.csv. When the spool
+      // partition moved or changed size (3.9.2.0 shrank it to 128 KB; 3.9.3.0
+      // restores 7.9 MB), the marker says "formatted" but the region holds
+      // no filesystem, so ensureOtaFs() could never mount it and every OTA
+      // upload failed. A mount failure here means there is nothing to keep:
+      // format once, at boot, before the HTTP server runs.
+      LOGW("LittleFS: marked formatted but mount failed (partition layout changed?); reformatting");
+      if (LittleFS.begin(true)) {
+        LOGI("LittleFS: reformatted, %u KB total", (unsigned)(LittleFS.totalBytes() / 1024));
+        LittleFS.end();
+      } else {
+        LOGW("LittleFS: reformat failed; OTA spool will stay unavailable");
+      }
+    } else {
+      LittleFS.end();
     }
   }
 

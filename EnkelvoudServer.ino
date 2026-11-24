@@ -1,8 +1,10 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.2.0"
-//Bug fixes
+#define EVD_FW_VERSION "3.9.3.0"
+// 3.9.3.0: OTA upload works again (spool partition back to 7.9 MB, remount
+//           check at boot); USB source selectable again (EspUsbDevice was
+//           being compiled out by the __has_include detection)
 #endif
 #define FW_VERSION EVD_FW_VERSION
 
@@ -271,16 +273,17 @@ static const char *SETTINGS_VERSION = "v2.0.7";
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include "opus.h"
-// [usb-lib-detect] Unconditional include of the UAC library so arduino-cli
-// can resolve it (it only scans the sketch's own #include lines). The CODE in
-// EVDUsb.h is still guarded on EVD_HAS_USB_DEVICE_LIB; this just makes the
-// header visible when it exists. A machine without it still compiles the
-// no-library fallback path.
-#if defined(__has_include)
-  #if __has_include(<EspUsbDevice.h>)
-    #include <EspUsbDevice.h>
-  #endif
-#else
+// [usb-lib-detect] The UAC library MUST be included unconditionally.
+// arduino-cli only adds a library to the include path after a bare
+// #include of it fails during discovery; wrapping it in __has_include()
+// hides that failure, so the library was never found, USB was compiled out
+// (EVD_HAS_USB_DEVICE_LIB 0), and every USB source select answered 501
+// "no_library" -> dashboard toast "Source change not accepted".
+// Build without the library only by passing -DEVD_HAS_USB_DEVICE_LIB=0.
+#ifndef EVD_HAS_USB_DEVICE_LIB
+  #define EVD_HAS_USB_DEVICE_LIB 1
+#endif
+#if EVD_HAS_USB_DEVICE_LIB
   #include <EspUsbDevice.h>
 #endif
 
@@ -429,21 +432,7 @@ const char *default_ap_password       = "";
 #define PENDING_MAX_FRAMES 4096
 
 // ---- USB Audio Class -------------------------------------------------------
-// [usb-lib-detect] Was a literal `#if 1`, so the fallback branch below was
-// dead code and the no-library stubs in EVDUsb.h could never be selected. A
-// build on a machine without EspUsbDevice therefore failed at LINK time
-// instead of degrading to "USB disabled, everything else works".
-#if defined(__has_include)
-  #if __has_include(<EspUsbDevice.h>)
-    #define EVD_HAS_USB_DEVICE_LIB 1
-  #else
-    #define EVD_HAS_USB_DEVICE_LIB 0
-    #pragma message("EspUsbDevice.h not found: USB audio source is disabled in this build")
-  #endif
-#else
-  #define EVD_HAS_USB_DEVICE_LIB 1
-#endif
-
+// EVD_HAS_USB_DEVICE_LIB is decided next to the EspUsbDevice include above.
 #define EVD_USB_VID 0x303a
 #define EVD_USB_PID 0x40e0
 
