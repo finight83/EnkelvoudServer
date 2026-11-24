@@ -1,6 +1,6 @@
 // ---- Versioning ------------------------------------------------------------
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.1.6" // USB: 10% volume on connect, Windows slider polling
+#define EVD_FW_VERSION "3.9.2.0" // Bug fixes
 #endif
 #define FW_VERSION EVD_FW_VERSION
 
