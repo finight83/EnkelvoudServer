@@ -1579,9 +1579,10 @@ inline void setup_queues_and_tasks() {
   // it silently.
   //
   // Priority order on Core 0 (highest → lowest):
-  //   WiFi(23) → lwIP(18) → audioRead(4) = clockSync(4) → udpSend(3) →
-  //   audioProc(2) → loop(1) = AsyncTCP(1)
-  // On Core 1: audioEncode(5) only.
+  //   WiFi(23) → lwIP(18) → udpSend(3) = clockSync(3) → audioProc(2) →
+  //   loop(1) = AsyncTCP(1)
+  // On Core 1: audioRead(6) → audioEncode(5).
+  //
   // [core-assign-audioread] audioRead moved from core 0/pri 4 to core 1/pri 6.
   //
   // It is the only task in the system that can lose IRREPLACEABLE data. A late
