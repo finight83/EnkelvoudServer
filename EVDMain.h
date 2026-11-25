@@ -369,6 +369,9 @@ void setup() {
   // the boot mode's saved complexity with profileForMode()'s start value.
   configureQuietFilters();
   setupDiscoveryResponder();
+  // [servers-decide] Peer beacons + election (EVDPeers.h). Binds UDP :4205
+  // and loads the persisted priority; safe before the HTTP server starts.
+  peerSetup();
   // [setup-order-ctrl-mutex] Transport must be brought up BEFORE the HTTP
   // server, because setup_udp_transport() creates ctrlMutex and every HTTP
   // handler that calls sendCtrlToSubscriber() / broadcastNodeConfig() /
@@ -540,6 +543,7 @@ void loop() {
   otaCheckStuckJob();   // [ota-stuck-job-loop-watchdog]
   serviceVolumePot();
   handleDiscoveryPacket();
+  peerTick();   // [servers-decide] beacons + election, once per second
 
   unsigned long now = millis();
 

@@ -1,7 +1,10 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.3.1"
+#define EVD_FW_VERSION "3.9.4.0"
+// 3.9.4.0: P3 - multi-server peer beacons + "servers decide" election on UDP
+//          :4205. Only the elected leader answers discovery / accepts
+//          registrations / sends audio; /api/servers* expose and set priority.
 // 3.9.3.1: P2 - new nodes stay unassigned in a Discovered pool and are muted
 //           until dragged into a room; /api/state players carry "assigned".
 // 3.9.3.0: OTA upload works again (spool partition back to 7.9 MB, remount
@@ -593,5 +596,6 @@ inline void handleClockSyncRequests();
 #include "EVDDLNA.h"
 #include "EVDZones.h"
 #include "EVDPlayers.h"
+#include "EVDPeers.h"
 #include "EVDRoutes.h"
 #include "EVDMain.h"

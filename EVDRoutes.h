@@ -386,6 +386,12 @@ inline void setup_http_server() {
 
 
   server.on("/api/player/register", HTTP_POST, rejectEmptyBodyPost, nullptr, handlePlayerRegistration);
+
+  // ---- Servers (P3: servers decide) ---------------------------------------
+  server.on("/api/servers",          HTTP_GET,  handleApiServers);
+  server.on("/api/servers/priority", HTTP_POST, rejectEmptyBodyPost, nullptr, handleApiServersPriority);
+  server.on("/api/servers/order",    HTTP_POST, rejectEmptyBodyPost, nullptr, handleApiServersOrder);
+
   server.on("/api/audio/encoding",           HTTP_GET,  handleGetAudioEncoding);
   server.on("/api/audio/encoding",           HTTP_POST, rejectEmptyBodyPost, nullptr, handlePostAudioEncoding);
   server.on("/api/audio/encoding/revert",    HTTP_POST, handlePostAudioEncodingRevert);

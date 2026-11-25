@@ -218,6 +218,13 @@ inline void handlePlayerRegistration(AsyncWebServerRequest *request, uint8_t *da
     request->send(503, "application/json", "{\"ok\":false,\"error\":\"OTA in progress\"}");
     return;
   }
+  // [servers-decide] Only the elected leader serves nodes. A standby answers
+  // 503 so the node's contact fails and it re-discovers the leader.
+  if (!g_peerIsLeader) {
+    request->send(503, "application/json",
+                  "{\"ok\":false,\"status\":\"standby\"}");
+    return;
+  }
   // [register-single-chunk] All node firmwares send the full register
   // body in one segment. A fragmented body must NOT be parsed chunk-wise:
   // the first partial chunk would omit audioProtocolVersion, forcing

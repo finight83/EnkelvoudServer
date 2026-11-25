@@ -542,6 +542,23 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           <span class="stat-pill" id="stat-psram" title="PSRAM used" style="display:none">PS-%</span>
         </div>
 
+        <!-- [servers-decide] Multi-server election: role + draggable priority -->
+        <div class="control-card" style="margin-top:16px;">
+          <div class="data-label" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            Servers
+            <span class="stat-pill" id="srv-role">role …</span>
+            <span class="stat-pill" id="srv-leader">leader …</span>
+          </div>
+          <p class="muted" style="font-size:0.78rem;margin:6px 0 0;">Drag to set which server the nodes use &mdash; top row = preferred. Only the leader answers node discovery.</p>
+          <div id="serverList" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+          <div class="log-controls" style="margin-top:10px;align-items:center;">
+            <span class="muted" style="font-size:0.78rem;">Priority (1 = highest)</span>
+            <input type="number" id="srv-priority" min="1" max="99" style="width:70px;padding:6px;border-radius:8px;border:1px solid #343440;background:#0d0d12;color:var(--text);">
+            <button type="button" class="btn-glass" onclick="applyPriority()">Apply</button>
+            <span class="muted" id="srv-state" style="font-size:0.78rem;"></span>
+          </div>
+        </div>
+
         <h2 class="section-title" style="font-size:1rem;margin-bottom:10px;">Stream Telemetry</h2>
         <div class="telemetry-bar">
           <span class="tel-pill"><b id="stat-mode">--</b>mode</span>
@@ -984,6 +1001,8 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     var zonesKey      = '';
     var playersData   = [];
     var playersKey    = '';
+    var serversData   = [];
+    var serversKey    = '';
     var activeDrags   = { volume: false, buffer: false };
     var pendingDefaultSourceSave = null;
     var pendingModeSave = null;
@@ -1446,6 +1465,10 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         var pk = JSON.stringify(s.players);
         if (pk !== playersKey) { playersKey = pk; playersData = s.players; renderDiscovered(); }
       }
+      if (s.servers) {
+        var sk = JSON.stringify([s.role, s.leaderId, s.priority, s.servers]);
+        if (sk !== serversKey) { serversKey = sk; serversData = s.servers; renderServers(s); }
+      }
       paintMuteAllButton();
       syncSourceFromState(s);
     }
@@ -1551,6 +1574,97 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       });
       container.innerHTML = html;
     }
+
+    // ====================================================================
+    //  Servers (P3: servers decide) - role, priority, drag order
+    // ====================================================================
+    function escHtml(v) {
+      return String(v == null ? '' : v).replace(/[&<>"]/g, function(c){
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+      });
+    }
+    function renderServers(s) {
+      var listEl = $('serverList');
+      var roleEl = $('srv-role');
+      var leadEl = $('srv-leader');
+      if (!listEl) return;
+      var isLeader = (s.role === 'leader');
+      if (roleEl) {
+        roleEl.textContent = isLeader ? 'LEADER' : 'standby';
+        roleEl.className = 'stat-pill' + (isLeader ? ' ok' : '');
+      }
+      var leader = (serversData || []).find(function(x){ return x.id === s.leaderId; });
+      if (leadEl) {
+        leadEl.textContent = 'leader: ' + (leader ? (leader.self ? 'this server' : (leader.name || leader.id)) : '?');
+      }
+      var prioEl = $('srv-priority');
+      if (prioEl && document.activeElement !== prioEl) prioEl.value = s.priority;
+      var html = '';
+      (serversData || []).forEach(function(sv, idx){
+        var down = (sv.alive === false) && !sv.self;
+        var badge = (sv.id === s.leaderId)
+          ? '<span class="stat-pill ok">leader</span>'
+          : (down ? '<span class="stat-pill" style="opacity:.6">down</span>' : '');
+        html +=
+          '<div class="srv-row" draggable="true" data-id="' + escHtml(sv.id) + '"' +
+          ' ondragstart="srvDragStart(event)" ondragover="srvDragOver(event)"' +
+          ' ondragleave="srvDragLeave(event)" ondrop="srvDrop(event)" ondragend="srvDragEnd(event)"' +
+          ' style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);cursor:grab;' + (down ? 'opacity:.6;' : '') + '">' +
+            '<span class="muted" style="width:16px;text-align:right;">' + (idx + 1) + '</span>' +
+            '<strong>' + escHtml(sv.name || sv.id) + '</strong>' +
+            (sv.self ? '<span class="stat-pill" title="this server">this</span>' : '') +
+            '<span class="muted" style="font-size:.78rem;">' + escHtml(sv.ip) + ' &middot; prio ' + escHtml(sv.priority) + '</span>' +
+            badge +
+          '</div>';
+      });
+      listEl.innerHTML = html || '<p class="muted">no servers</p>';
+    }
+    var srvDragId = null;
+    window.srvDragStart = function(ev) {
+      srvDragId = ev.currentTarget.dataset.id;
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', srvDragId);
+    };
+    window.srvDragOver = function(ev) {
+      ev.preventDefault();
+      ev.currentTarget.style.borderColor = 'var(--accent-primary)';
+    };
+    window.srvDragLeave = function(ev) {
+      ev.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+    };
+    window.srvDragEnd = function(ev) {
+      ev.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+    };
+    window.srvDrop = function(ev) {
+      ev.preventDefault();
+      ev.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+      var targetId = ev.currentTarget.dataset.id;
+      var srcId = srvDragId || ev.dataTransfer.getData('text/plain');
+      if (!srcId || srcId === targetId) return;
+      var order = (serversData || []).map(function(x){ return x.id; });
+      var from = order.indexOf(srcId), to = order.indexOf(targetId);
+      if (from < 0 || to < 0) return;
+      order.splice(from, 1);
+      order.splice(to, 0, srcId);
+      var st = $('srv-state');
+      if (st) st.textContent = 'applying…';
+      api('/api/servers/order', 'POST', { order: order }).then(function(r){
+        if (st) st.textContent = (r && r.ok) ? 'order applied' : 'apply failed';
+        refreshStatus();
+      });
+    };
+    window.applyPriority = function() {
+      var el = $('srv-priority');
+      if (!el) return;
+      var v = parseInt(el.value, 10);
+      if (!v || v < 1) return;
+      var st = $('srv-state');
+      if (st) st.textContent = 'applying…';
+      api('/api/servers/priority', 'POST', { priority: v }).then(function(r){
+        if (st) st.textContent = (r && r.ok) ? ('priority ' + r.priority) : 'failed';
+        refreshStatus();
+      });
+    };
 
     window.zoneVolLive = function(id, v) { var el = $('zv-' + id); if (el) el.textContent = v + '%'; };
     window.dragNode = function(ev, ip) { ev.dataTransfer.setData('text/plain', ip); };

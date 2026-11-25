@@ -213,6 +213,13 @@ int    sourceLogRingCount = 0;
 // ---- OTA pause flag (extern in EVDOTA.h) -----------------------------------
 volatile bool otaPauseAudio = false;
 
+// ---- Multi-server election (P3: servers decide, see EVDPeers.h) ------------
+// g_peerIsLeader is read by udpSendTask (Core 0), the discovery responder,
+// the registration handler and the HTTP task; it is written by peerEval()
+// from loop() (Core 1), hence volatile. Single-server installs stay true.
+volatile bool g_peerIsLeader = true;
+int           g_peerPriority = 2;   // 1 = highest; PC defaults to 1
+
 // ---- Objects ---------------------------------------------------------------
 AsyncWebServer server(80);
 OpusEncoder   *opusEncoder = nullptr;

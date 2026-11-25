@@ -188,6 +188,10 @@ inline void udpSendTask(void *param) {
     g_udpSendLoopCount++;
 
     if (otaPauseAudio) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
+    // [servers-decide] A standby must not stream: its nodes belong to the
+    // elected leader. Delay BEFORE dequeuing so standby does not consume
+    // frames the leader is producing for the same fleet.
+    if (!g_peerIsLeader) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
     if (xQueueReceive(opusQueue, &pkt, portMAX_DELAY) != pdTRUE) continue;
     uint32_t packetArrivalMs = millis();
 

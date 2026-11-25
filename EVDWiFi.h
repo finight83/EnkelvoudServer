@@ -23,6 +23,10 @@ inline void handleDiscoveryPacket() {
                    buf[n-1] == ' '  || buf[n-1] == '\t')) buf[--n] = '\0';
   if (strcmp(buf, DISCOVERY_MAGIC_REQ) != 0) return;
 
+  // [servers-decide] Only the elected leader answers node discovery; a
+  // standby stays silent so the nodes converge on the leader (EVDPeers.h).
+  if (!g_peerIsLeader) return;
+
   IPAddress remote     = discoveryUdp.remoteIP();
   uint16_t  remotePort = discoveryUdp.remotePort();
 

@@ -2,6 +2,7 @@
 // ============================================================================
 //  EVDSTS.h - /api/state and /api/stats endpoints
 // ============================================================================
+#include "EVDPeers.h"   // [servers-decide] peerBuildJson() for /api/state
 //
 // [single-string-response]
 // Both handlers below used AsyncResponseStream and a long series of
@@ -430,6 +431,11 @@ inline void handleApiState(AsyncWebServerRequest *request) {
     if (i > 0) body += ",";
     appendZoneJson(body, zcopy[i], players);
   }
+
+  // [servers-decide] Election state for the dashboard's Servers card.
+  body += ",";
+  body += peerBuildJson(false);
+
   body += "]}";
 
   AsyncWebServerResponse *resp =
