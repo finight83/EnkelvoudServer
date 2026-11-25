@@ -472,6 +472,10 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           </button>
         </div>
       </div>
+      <div class="control-card" id="discoveredCard" style="display:none; margin: 0 30px 16px;">
+        <div class="data-label" style="margin-bottom:8px;">Discovered nodes &mdash; drag into a room to assign (muted until then)</div>
+        <div id="discoveredContainer" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+      </div>
       <div class="zone-container" id="zonesContainer">
         <div class="control-card"><p class="muted">Loading zone map...</p></div>
       </div>
@@ -978,6 +982,8 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     var currentSource = 'BT';
     var zonesData     = [];
     var zonesKey      = '';
+    var playersData   = [];
+    var playersKey    = '';
     var activeDrags   = { volume: false, buffer: false };
     var pendingDefaultSourceSave = null;
     var pendingModeSave = null;
@@ -1436,6 +1442,10 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         var k = JSON.stringify(s.zones);
         if (k !== zonesKey) { zonesKey = k; zonesData = s.zones; renderZones(); }
       }
+      if (s.players) {
+        var pk = JSON.stringify(s.players);
+        if (pk !== playersKey) { playersKey = pk; playersData = s.players; renderDiscovered(); }
+      }
       paintMuteAllButton();
       syncSourceFromState(s);
     }
@@ -1497,9 +1507,12 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           ? '<button type="button" draggable="false" class="btn-glass" style="flex:0 0 auto;padding:3px 7px;font-size:0.7rem;border-color:var(--danger);color:var(--danger);" title="Remove offline node" onclick="removeOfflineNode(event, \'' + zone.id + '\', \'' + node.ip + '\')">Del</button>'
           : '';
         var displayName = isOffline ? 'Offline' : safeNodeName;
+        var unHtml = isOffline
+          ? ''
+          : '<button type="button" draggable="false" class="btn-glass" style="flex:0 0 auto;padding:3px 7px;font-size:0.7rem;" title="Move back to Discovered (mutes it)" onclick="unassignNode(event, \'' + zone.id + '\', \'' + node.ip + '\')">&#8592;</button>';
         var actionsHtml =
           '<div style="display:flex;align-items:center;gap:6px;flex:0 0 auto;">' +
-            delHtml + gearHtml +
+            delHtml + unHtml + gearHtml +
           '</div>';
         html +=
           '<div class="' + chipClass + '" draggable="true" ondragstart="dragNode(event, \'' + node.ip + '\')">' +
@@ -1515,6 +1528,30 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       container.innerHTML = html;
     }
 
+    // --------------------------------------------------------------------
+    //  Discovered (unassigned) nodes: muted until dragged into a room
+    // --------------------------------------------------------------------
+    function renderDiscovered() {
+      var card = $('discoveredCard');
+      var container = $('discoveredContainer');
+      if (!card || !container) return;
+      var list = (playersData || []).filter(function(p){ return p.assigned === false; });
+      if (!list.length) { card.style.display = 'none'; container.innerHTML = ''; return; }
+      card.style.display = '';
+      var html = '';
+      list.forEach(function(p){
+        var name = String(p.name || p.ip).replace(/"/g, '&quot;');
+        var ver = p.version
+          ? ' <span style="color:var(--text-muted);font-weight:400;font-size:0.75rem;">v' + String(p.version).replace(/[^0-9A-Za-z._-]/g, '') + '</span>'
+          : '';
+        html +=
+          '<div class="node-chip" draggable="true" ondragstart="dragNode(event, \'' + p.ip + '\')" title="Drag into a room to assign">' +
+            '<div class="node-meta"><strong>' + name + ver + '</strong><span class="node-ip">' + p.ip + '</span></div>' +
+          '</div>';
+      });
+      container.innerHTML = html;
+    }
+
     window.zoneVolLive = function(id, v) { var el = $('zv-' + id); if (el) el.textContent = v + '%'; };
     window.dragNode = function(ev, ip) { ev.dataTransfer.setData('text/plain', ip); };
     window.allowDrop = function(ev) { ev.preventDefault(); ev.currentTarget.classList.add('drag-over'); };
@@ -1523,6 +1560,13 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       ev.preventDefault(); ev.currentTarget.classList.remove('drag-over');
       var ip = ev.dataTransfer.getData('text/plain');
       await api('/api/zones/move', 'POST', { ip: ip, zoneId: zoneId });
+      refreshStatus();
+    };
+    window.unassignNode = async function(ev, zoneId, ip) {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      if (!confirm('Move ' + ip + ' back to Discovered? It will be muted until assigned to a room again.')) return;
+      var r = await api('/api/zones/remove-node', 'POST', { zoneId: zoneId, ip: ip });
+      if (!r || !r.ok) toast('Could not unassign', 'err');
       refreshStatus();
     };
     window.createNewZone = async function() {

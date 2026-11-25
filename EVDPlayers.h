@@ -307,49 +307,13 @@ inline void handlePlayerRegistration(AsyncWebServerRequest *request, uint8_t *da
     unlockFor(subsMutex);
   }
 
-  // ---------- BEGIN zone-assignment on first sight -------------------------
-  // A newly-registered node is not in any zone's nodeIps list yet, so
-  // handleZonesConfig() finds an empty targetIps for Main Room and
-  // broadcastNodeConfig() silently defaults to zoneVolume=1.0 / zoneMuted=false
-  // for every unassigned node. That is why master volume/mute work but
-  // per-zone volume/mute never reach the node. Assign it to Main here, once,
-  // the first time we see it.
-  if (isNew) {
-    if (lockFor(zonesMutex, 80)) {
-      bool inAny = false;
-      for (auto &z : zones) {
-        for (auto &zip : z.nodeIps) {
-          if (zip == ip) { inAny = true; break; }
-        }
-        if (inAny) break;
-      }
-      if (!inAny) {
-        for (auto &z : zones) {
-          if (z.id == MAIN_ZONE_ID) {
-            z.nodeIps.push_back(ip);
-            // Do NOT write NVS from this handler. saveZonesToNVS() can
-            // trigger a 4 KB sector erase that stalls the flash cache for
-            // up to ~100 ms on the ESP32-S3, and this handler runs on the
-            // AsyncWebServer task while audioReadTask and the encoder are
-            // running on Core 1. Three or four nodes registering in quick
-            // succession after a server reboot was three or four of those
-            // stalls inside a few seconds - audible on the stream that had
-            // no mechanism for recovering lost I2S samples. The in-RAM
-            // `zones` vector is authoritative; the settings-dirty timer in
-            // EVDMain.h will flush it during the next quiet window (same
-            // path every other persistent setting already uses).
-            settingsDirty      = true;
-            settingsDirtySince = millis();
-            LOGI("Zone: auto-assigned new player %s to Main Room (NVS deferred)",
-                 ip.c_str());
-            break;
-          }
-        }
-      }
-      unlockFor(zonesMutex);
-    }
-  }
-  // ---------- END zone-assignment on first sight ---------------------------
+  // ---------- Discovered pool: do NOT auto-assign --------------------------
+  // [discovered-nodes] A newly-registered node stays unassigned until the
+  // operator drags it into a room on the dashboard. Until then it is muted
+  // (every zone-state dispatch below defaults unassigned nodes to muted).
+  // Previously this block auto-assigned every new node to Main Room, which
+  // made every node immediately audible and hid the "first join" step.
+  // -------------------------------------------------------------------------
 
   if (isNew) {
     LOGI("Player registered: %s v%s from %s (audioProtocolVersion=%d compatible=%s reason=%s)",
@@ -371,9 +335,9 @@ inline void handlePlayerRegistration(AsyncWebServerRequest *request, uint8_t *da
         if (found) break;
       }
       if (!found) {
-        for (auto &z : zc) {
-          if (z.id == MAIN_ZONE_ID) { zvol = z.volume; zmute = z.muted; break; }
-        }
+        // [discovered-nodes] Unassigned -> muted until dragged into a room.
+        zvol  = 0;
+        zmute = true;
       }
     }
 
@@ -437,9 +401,9 @@ inline void handlePlayerRegistration(AsyncWebServerRequest *request, uint8_t *da
       if (found) break;
     }
     if (!found) {
-      for (auto &z : zc) {
-        if (z.id == MAIN_ZONE_ID) { zoneVolNow = z.volume; zoneMuteNow = z.muted; break; }
-      }
+      // [discovered-nodes] Unassigned -> muted until dragged into a room.
+      zoneVolNow  = 0;
+      zoneMuteNow = true;
     }
   }
 
@@ -667,16 +631,11 @@ inline void broadcastNodeConfig() {
   std::vector<Zone> zcopy = snapshotZones();
 
   for (auto &s : subs) {
-    // Start from Main Room's current state, not a hardcoded 100/false.
-    // That way an unassigned node inherits whatever the operator set on
-    // Main's slider instead of always getting a silent default.
-    int  zvol  = 100;
-    bool zmute = false;
-    for (auto &z : zcopy) {
-      if (z.id == MAIN_ZONE_ID) { zvol = z.volume; zmute = z.muted; break; }
-    }
-
-    // Then override with the node's actual zone, if it has one.
+    // [discovered-nodes] Unassigned nodes are muted (0 % / muted). Only a
+    // node that is actually a member of a zone gets that zone's state; it is
+    // un-muted the moment the operator drags it into a room.
+    int  zvol  = 0;
+    bool zmute = true;
     for (auto &z : zcopy) {
       bool member = false;
       for (auto &n : z.nodeIps) {

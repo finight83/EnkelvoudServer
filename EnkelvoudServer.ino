@@ -1,7 +1,9 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.3.0"
+#define EVD_FW_VERSION "3.9.3.1"
+// 3.9.3.1: P2 - new nodes stay unassigned in a Discovered pool and are muted
+//           until dragged into a room; /api/state players carry "assigned".
 // 3.9.3.0: OTA upload works again (spool partition back to 7.9 MB, remount
 //           check at boot); USB source selectable again (EspUsbDevice was
 //           being compiled out by the __has_include detection)

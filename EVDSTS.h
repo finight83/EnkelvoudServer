@@ -91,26 +91,15 @@ inline void handleApiState(AsyncWebServerRequest *request) {
   std::vector<PlayerNode> players = snapshotPlayers(millis());
   std::vector<Zone> zcopy = snapshotZones();
 
-  if (!players.empty()) {
+  // [discovered-nodes] Keep a synthetic Main room for the UI, but do NOT
+  // attach unassigned players to it: they belong to the Discovered pool and
+  // are muted until the operator drags them into a room.
+  {
     bool hasMain = false;
     for (auto &z : zcopy) if (z.id == MAIN_ZONE_ID) hasMain = true;
     if (!hasMain) {
       zcopy.insert(zcopy.begin(),
                    Zone{MAIN_ZONE_ID, "Main Room", 100, false, std::vector<String>()});
-    }
-    for (auto &p : players) {
-      bool assigned = false;
-      for (auto &z : zcopy) {
-        for (auto &ip : z.nodeIps) {
-          if (ip == p.ip) { assigned = true; break; }
-        }
-        if (assigned) break;
-      }
-      if (!assigned) {
-        for (auto &z : zcopy) {
-          if (z.id == MAIN_ZONE_ID) { z.nodeIps.push_back(p.ip); break; }
-        }
-      }
     }
   }
 
@@ -416,7 +405,16 @@ inline void handleApiState(AsyncWebServerRequest *request) {
     body += jsonEscape(players[i].ip);
     body += "\",\"version\":\"";
     body += jsonEscape(players[i].version);
-    body += "\",\"declaredAudioProtocolVersion\":";
+    body += "\",\"assigned\":";
+    bool pAssigned = false;
+    for (auto &z : zcopy) {
+      for (auto &zip : z.nodeIps) {
+        if (zip == players[i].ip) { pAssigned = true; break; }
+      }
+      if (pAssigned) break;
+    }
+    body += pAssigned ? "true" : "false";
+    body += ",\"declaredAudioProtocolVersion\":";
     body += String((int)players[i].declaredAudioProtocolVersion);
     body += ",\"negotiatedAudioProtocolVersion\":";
     body += String((int)players[i].negotiatedAudioProtocolVersion);
