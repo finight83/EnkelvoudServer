@@ -389,6 +389,108 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       border-color: var(--danger);
       box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
     }
+
+    /* ==================================================================
+       CLEAN THEME - same language as the PC dashboard: soft glass panel,
+       hairline rows, quiet glows, sentence-case labels.
+       ================================================================== */
+    :root {
+      --text-main: #f4f5fb;
+      --text-muted: #b3b9d1;
+      --accent-primary: #9db6ff;
+      --accent-secondary: #b48cff;
+      --glass-bg: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
+      --glass-border-light: rgba(255,255,255,0.14);
+      --glass-border-dim: rgba(255,255,255,0.10);
+      --hair: rgba(255,255,255,0.10);
+      --hair-strong: rgba(255,255,255,0.16);
+    }
+    body { background-color: #07070f; }
+    .stars { display: none !important; }
+    .orb { filter: blur(120px); opacity: .30; animation-duration: 40s; }
+    .orb-1 { background: #4b2bff; }
+    .orb-2 { background: #8a4bff; }
+    .orb-3 { background: #1f8fff; opacity: .30; }
+
+    .dashboard-container {
+      border-radius: 30px;
+      border: 1px solid var(--hair-strong);
+      background: linear-gradient(180deg, rgba(22,22,38,0.74), rgba(12,12,22,0.72));
+      backdrop-filter: blur(28px) saturate(140%);
+      -webkit-backdrop-filter: blur(28px) saturate(140%);
+      box-shadow: 0 40px 90px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.16);
+    }
+    .top-bar { padding: 22px 26px 14px; gap: 16px; align-items: center; }
+    .page-title, .brand-title {
+      background: none; -webkit-text-fill-color: currentColor; color: #fff;
+      text-shadow: none; font-weight: 650; letter-spacing: -0.02em;
+    }
+
+    .nav-btn {
+      border: 1px solid var(--hair); background: rgba(255,255,255,0.05);
+      border-radius: 999px; color: var(--text-muted);
+      padding: 8px 15px; font-weight: 550;
+      transition: background .18s ease, color .18s ease, border-color .18s ease;
+    }
+    .nav-btn:hover { background: rgba(255,255,255,0.10); color: #fff; }
+    .nav-btn.active {
+      background: rgba(255,255,255,0.15); color: #fff;
+      border-color: var(--hair-strong);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
+    }
+
+    .section-title {
+      background: none; -webkit-text-fill-color: currentColor; color: #fff;
+      text-shadow: none; font-weight: 600; letter-spacing: -0.01em;
+    }
+    .control-card, .zone-box, .enc-card, .ota-modal-panel {
+      background: rgba(255,255,255,0.055);
+      border: 1px solid var(--hair);
+      border-radius: 20px;
+      box-shadow: none;
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    }
+    .zone-box { border-radius: 22px; }
+    .node-chip {
+      background: rgba(255,255,255,0.05); border: 1px solid var(--hair);
+      border-radius: 14px;
+    }
+    .node-chip:hover { background: rgba(255,255,255,0.09); transform: none; }
+
+    .btn-glass, .btn {
+      background: rgba(255,255,255,0.07); border: 1px solid var(--hair);
+      border-radius: 999px; color: var(--text-main); font-weight: 550;
+    }
+    .btn-glass:hover, .btn:hover { background: rgba(255,255,255,0.12); border-color: var(--hair-strong); }
+    .btn-primary {
+      background: linear-gradient(135deg, #9db6ff, #b48cff);
+      border: none; border-radius: 999px; color: #0b0a16; font-weight: 650;
+      box-shadow: 0 6px 20px rgba(150,140,255,.28);
+    }
+    select, input[type="text"], input[type="number"], input[type="file"], textarea {
+      background: rgba(0,0,0,0.25); border: 1px solid var(--hair);
+      border-radius: 12px; color: var(--text-main);
+    }
+    input[type="range"] { accent-color: var(--accent-secondary); }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.45);
+    }
+    .stat-pill, .tel-pill {
+      background: rgba(255,255,255,0.06); border: 1px solid var(--hair);
+      border-radius: 10px;
+    }
+    .ota-modal-backdrop { background: rgba(4,4,10,0.62); backdrop-filter: blur(8px); }
+    .ota-modal-panel {
+      background: linear-gradient(180deg, rgba(30,30,52,0.94), rgba(16,16,30,0.96));
+      border: 1px solid var(--hair-strong); border-radius: 24px;
+    }
+    #toast {
+      background: rgba(20,20,36,0.95);
+      border: 1px solid var(--hair-strong); border-radius: 14px;
+    }
+
   </style>
 </head>
 <body>
