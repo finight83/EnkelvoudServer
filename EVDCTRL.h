@@ -79,9 +79,6 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .nav-btn-primary { background: linear-gradient(135deg, rgba(0,210,255,0.35), rgba(142,45,226,0.35)); color: #fff; border-color: rgba(255,255,255,0.28); box-shadow: 0 0 12px rgba(0,210,255,0.3); }
     .nav-btn-primary:hover { background: linear-gradient(135deg, rgba(0,210,255,0.55), rgba(142,45,226,0.55)); }
 
-    .master-label { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; white-space: nowrap; }
-    .master-label b { color: var(--text-main); margin-left: 6px; }
-
     .tab-content { display: none; padding: 24px 30px; animation: fadeIn 0.4s ease forwards; }
     .tab-content.active { display: block; }
     @keyframes fadeIn { from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:translateY(0);} }
@@ -122,26 +119,9 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .btn-glass:disabled { opacity: .4; cursor: not-allowed; }
     .btn-mute-active { background: var(--danger) !important; border-color: var(--danger) !important; color: #fff !important; box-shadow: 0 0 10px var(--danger); }
 
-    /* ---- Zones controls (mode/source/volume/mute, only visible on Zones) --- */
+    /* ---- Zones controls (quiet mode) ---------------------------------- */
     .zones-controls { padding: 16px 30px 4px; display: flex; flex-direction: column; gap: 14px; }
-    .zones-mode-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .zones-volume-row { display: flex; gap: 12px; align-items: center; }
-    .zones-volume-row #volume {
-      flex: 1 1 auto; -webkit-appearance: none;
-      height: 6px; background: rgba(255,255,255,0.2);
-      border-radius: 3px; outline: none;
-      box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
-    }
-    .zones-volume-row #volume::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
-      background: #fff; cursor: pointer; border: 2px solid var(--accent-secondary);
-      box-shadow: 0 0 15px rgba(0,210,255,0.8);
-    }
-    .zones-volume-row #volume::-moz-range-thumb {
-      width: 18px; height: 18px; border-radius: 50%; background: #fff; cursor: pointer;
-      border: 2px solid var(--accent-secondary); box-shadow: 0 0 15px rgba(0,210,255,0.8);
-    }
-    .zones-volume-row .icon-btn { flex: 0 0 auto; }
 
     .mode-select {
       appearance: none; -webkit-appearance: none;
@@ -237,7 +217,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .rec-result-textarea { flex: 1 1 auto; width: 100%; min-height: 300px; max-height: 60vh; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; color: #cbd5e1; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .72rem; line-height: 1.4; resize: vertical; }
     .rec-result-actions { display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end; }
 
-    /* ---- OTA wizard modal (unchanged) --------------------------------- */
+    /* ---- Modal dialog (server name editor) ----------------------------- */
     .ota-modal { position: fixed; inset: 0; z-index: 1000; display: none; align-items: center; justify-content: center; padding: 20px; }
     .ota-modal.open { display: flex; }
     .ota-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
@@ -245,88 +225,17 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .ota-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 4px; }
     .ota-close { background: transparent; border: none; color: var(--text-muted); font-size: 1.6rem; line-height: 1; cursor: pointer; padding: 0 4px; }
     .ota-close:hover { color: #fff; }
-    .ota-steps { display: flex; gap: 8px; align-items: center; }
-    .ota-step-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.15); transition: all .3s ease; }
-    .ota-step-dot.active { width: 22px; border-radius: 4px; background: var(--accent-primary); box-shadow: 0 0 10px var(--accent-primary); }
-    .ota-step-dot.done { background: var(--success); }
     .ota-modal-body { padding: 8px 24px 4px; overflow-y: auto; }
-    .ota-step { display: none; }
-    .ota-step.active { display: block; animation: fadeIn .3s ease forwards; }
-    .ota-step h3 { font-size: 1.15rem; margin-bottom: 10px; font-weight: 700; background: linear-gradient(to right,#00d2ff,#8e2de2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .ota-step p { font-size: .88rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.45; }
-    .ota-step code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px; font-size: .82rem; color: var(--text-main); }
     .ota-modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px 20px; }
     .btn-primary { background: linear-gradient(135deg,#00d2ff,#8e2de2); border: none; color: #fff; padding: 9px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: .88rem; box-shadow: 0 0 18px rgba(0,210,255,0.35); }
     .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; filter: grayscale(0.6); }
     .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
-    .ota-progress-bar { height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; margin-top: 14px; overflow: hidden; }
-    .ota-progress-fill { height: 100%; width: 0%; background: linear-gradient(to right,#00d2ff,#8e2de2); transition: width .4s ease; }
-    .ota-current-wrap { margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); display: none; }
-    .ota-current-wrap.visible { display: block; }
-    .ota-current-wrap .checkbox span { font-size: .88rem; }
-    .ota-current-wrap b { color: var(--accent-primary); margin-left: 4px; }
-    .ota-target-row { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; transition: opacity .2s, filter .2s; }
-    .ota-target-row.disabled { opacity: .32; filter: grayscale(.6); }
-    .ota-target-row .checkbox span { font-size: .88rem; }
-    .ota-target-row .checkbox input[type=checkbox]:disabled { cursor: not-allowed; }
-    .ota-server-meta { font-size: .76rem; color: var(--text-muted); margin-top: 6px; margin-left: 28px; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; }
-    .ota-targets-list { max-height: 260px; overflow-y: auto; transition: opacity .2s, filter .2s; }
-    .ota-targets-list.disabled { opacity: .32; filter: grayscale(.6); pointer-events: none; }
-    .ota-section-label { font-size: .72rem; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-muted); margin: 4px 0 8px; }
-    .ota-node-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-    .ota-select-all { margin: 0; gap: .4rem; text-transform: none; letter-spacing: 0; font-size: .75rem; font-weight: 600; color: var(--text-muted); cursor: pointer; user-select: none; }
-    .ota-select-all input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent-primary); cursor: pointer; }
-    .ota-select-all input:disabled { cursor: not-allowed; opacity: .4; }
-    .ota-select-all input:disabled + span { opacity: .4; }
-    .ota-node-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 8px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; cursor: pointer; transition: background .2s, border-color .2s; font-size: .88rem; }
-    .ota-node-item:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.15); }
-    .ota-node-item input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent-primary); flex: 0 0 auto; margin: 0; }
-    .ota-node-item input[type=checkbox]:disabled { cursor: not-allowed; }
-    .ota-node-body { flex: 1 1 auto; min-width: 0; }
-    .ota-node-name { font-weight: 600; font-size: .9rem; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ota-node-ip { font-size: .76rem; color: var(--text-muted); font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; margin-top: 2px; }
-    .ota-node-ver { flex: 0 0 auto; font-size: .78rem; color: var(--text-muted); text-align: right; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; }
-    .ota-node-ver .new { color: var(--accent-primary); font-weight: 600; }
-    .ota-spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.2); border-top-color: var(--accent-primary); border-radius: 50%; animation: busySpin .8s linear infinite; display: inline-block; vertical-align: middle; }
-    @keyframes busySpin { to { transform: rotate(360deg); } }
-    .ok-tick { color: var(--success); font-size: 1.2rem; font-weight: bold; }
-    .bad-x { color: var(--danger); font-size: 1.2rem; font-weight: bold; }
 
-    /* ---- OTA wizard live log pane ------------------------------------- */
-    .ota-log-wrap { margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px; display: none; }
-    .ota-log-wrap.visible { display: block; }
-    .ota-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-    .ota-log-header span { font-size: .74rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
-    .ota-log-toggle { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: var(--text-muted); padding: 3px 10px; border-radius: 6px; font: inherit; font-size: .72rem; cursor: pointer; min-height: 26px; }
-    .ota-log-toggle:hover { background: rgba(255,255,255,0.14); color: var(--text-main); }
-    .ota-log-pre { margin: 0; padding: 10px 12px; max-height: 180px; overflow-y: auto; background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .72rem; line-height: 1.45; white-space: pre-wrap; word-break: break-all; color: #cbd5e1; }
-    .ota-log-pre .lg-e { color: #f87171; }
-    .ota-log-pre .lg-w { color: #fbbf24; }
-    .ota-log-pre .lg-i { color: #cbd5e1; }
-
-    /* ---- Wi-Fi scan modal (node-parity overlay/modal) ---------------- */
-    .wifi-modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.7); }
-    .wifi-modal.open { display: flex; }
-    .wifi-modal-panel { position: relative; width: 100%; max-width: 460px; background: linear-gradient(135deg, rgba(30,30,45,.95), rgba(15,15,25,.95)); border: 1px solid rgba(255,255,255,0.15); border-radius: 20px 20px 0 0; padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); overflow: hidden; display: flex; flex-direction: column; max-height: 80vh; }
-    .wifi-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .wifi-modal-body { max-height: 46vh; overflow-y: auto; margin: 12px 0 0; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; }
-    .wifi-net { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 14px 12px; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--text-main); font: inherit; cursor: pointer; min-height: 48px; transition: background .15s ease; }
-    .wifi-net:last-child { border-bottom: 0; }
-    .wifi-net:hover { background: rgba(255,255,255,0.05); }
-    .wifi-net .rssi { color: var(--text-muted); font-size: .82rem; flex: 0 0 auto; }
-
-    /* ---- Sticky shell + icon buttons -------------------------------- */
+    /* ---- Sticky shell -------------------------------------------------- */
     .sticky-shell { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, rgba(10,10,22,0.96) 0%, rgba(10,10,22,0.88) 70%, rgba(10,10,22,0.78) 100%); backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%); border-bottom: 1px solid rgba(255,255,255,0.08); }
-    .top-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: nowrap; margin-left: auto; }
-    .icon-btn { width: 40px; height: 40px; padding: 0; border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: var(--text-main); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; font-size: 1.15rem; line-height: 1; transition: background .2s ease, border-color .2s ease; flex: 0 0 auto; }
-    .icon-btn:hover { background: rgba(255,255,255,0.14); }
-    .icon-btn.active { background: linear-gradient(135deg,#00d2ff,#8e2de2); border-color: transparent; color: #fff; box-shadow: 0 0 14px rgba(0,210,255,0.45); }
-    .icon-btn.danger { color: var(--danger); border-color: rgba(239,68,68,0.5); }
 
-    .volume-float { display: none; }
     .log-controls { display: flex; gap: 8px; align-items: center; margin-top: 16px; }
     .log-controls .muted { font-size: .8rem; }
-    #src-log { font-family: ui-monospace, Consolas, monospace; }
 
     @media (max-width: 600px) {
       body { padding: 8px; padding-bottom: 140px; }
@@ -348,11 +257,10 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       .ota-modal-footer { padding: 14px 18px 18px; }
       .rec-result-panel { max-width: 100%; }
       .rec-result-textarea { font-size: .65rem; }
-      .control-row #volume, .control-row .master-label { display: none; }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .nav-btn, .mode-btn, .btn-glass, .control-card, .zone-box, .node-chip, .gear, .tab-content, input, select, .checkbox, .ota-modal, .ota-modal-panel, .ota-step, .ota-progress-fill, .ota-step-dot, .ota-close, .btn-primary, .ota-node-item, .ota-target-row, .sub-tab-btn, .rec-progress-fill {
+      .nav-btn, .mode-btn, .btn-glass, .control-card, .zone-box, .node-chip, .gear, .tab-content, input, select, .checkbox, .ota-modal, .ota-modal-panel, .ota-close, .btn-primary, .sub-tab-btn, .rec-progress-fill {
         transition: none !important; animation: none !important;
       }
     }
@@ -389,10 +297,9 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       border-color: var(--danger);
       box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
     }
-
     /* ==================================================================
-       CLEAN THEME - same language as the PC dashboard: soft glass panel,
-       hairline rows, quiet glows, sentence-case labels.
+       CLEAN THEME - soft glass panel, hairline rows, quiet glows.
+       Overrides the original candy-glass look; layout rules are untouched.
        ================================================================== */
     :root {
       --text-main: #f4f5fb;
@@ -402,47 +309,397 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       --glass-bg: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
       --glass-border-light: rgba(255,255,255,0.14);
       --glass-border-dim: rgba(255,255,255,0.10);
+      --panel: rgba(18,18,34,0.55);
+      --card: rgba(255,255,255,0.055);
       --hair: rgba(255,255,255,0.10);
       --hair-strong: rgba(255,255,255,0.16);
+      --danger: #ff6b81;
+      --success: #4ade80;
+      --warn: #fbbf24;
     }
-    body { background-color: #07070f; }
+
+    body { background: #07070f; padding: 28px 20px; }
+
+    /* Calmer backdrop: two slow, blurred glows instead of orbs + stars */
     .stars { display: none !important; }
-    .orb { filter: blur(120px); opacity: .30; animation-duration: 40s; }
-    .orb-1 { background: #4b2bff; }
-    .orb-2 { background: #8a4bff; }
-    .orb-3 { background: #1f8fff; opacity: .30; }
+    .orb { filter: blur(120px); opacity: .42; animation-duration: 40s; }
+    .orb-1 { background: #4b2bff; width: 460px; height: 460px; top: -160px; left: -120px; }
+    .orb-2 { background: #8a4bff; width: 520px; height: 520px; bottom: -200px; right: -140px; }
+    .orb-3 { background: #1f8fff; width: 380px; height: 380px; opacity: .30; }
 
     .dashboard-container {
+      max-width: 920px;
       border-radius: 30px;
       border: 1px solid var(--hair-strong);
-      background: linear-gradient(180deg, rgba(22,22,38,0.74), rgba(12,12,22,0.72));
+      background: var(--glass-bg);
       backdrop-filter: blur(28px) saturate(140%);
       -webkit-backdrop-filter: blur(28px) saturate(140%);
       box-shadow: 0 40px 90px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.16);
     }
+
+    /* Header + pill navigation ------------------------------------------------ */
     .top-bar { padding: 22px 26px 14px; gap: 16px; align-items: center; }
+    .page-title {
+      font-size: 1.35rem; font-weight: 650; letter-spacing: -0.02em;
+      background: none; -webkit-text-fill-color: currentColor; color: #fff;
+      text-shadow: none;
+    }
+    .page-title svg { opacity: .35; }
+    .node-sub { color: var(--text-muted) !important; letter-spacing: .01em; }
+
+    .menu-bar {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 2px;
+      padding: 5px;
+      border: 1px solid var(--hair);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+    }
+    .menu-bar .nav-btn {
+      border: none; background: transparent; border-radius: 999px;
+      padding: 8px 15px; font-size: .86rem; font-weight: 550;
+      color: var(--text-muted); gap: 7px;
+      transition: background .18s ease, color .18s ease;
+    }
+    .menu-bar .nav-btn svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+    .menu-bar .nav-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .menu-bar .nav-btn.active { background: rgba(255,255,255,0.15); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.22); }
+    .menu-bar .nav-btn-primary { background: rgba(255,255,255,0.07); color: var(--text-muted); box-shadow: none; border: none; }
+    .menu-bar .nav-btn-primary:hover { background: rgba(255,255,255,0.12); color: #fff; }
+
+    /* Surfaces --------------------------------------------------------------- */
+    .control-card, .zone-box, .enc-card, .rec-panel, .ota-modal-panel {
+      background: var(--card);
+      border: 1px solid var(--hair);
+      border-radius: 20px;
+      box-shadow: none;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+    .zone-box { padding: 18px; border-radius: 22px; }
+    .zone-container { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .zone-actions { justify-content: flex-start; gap: 8px; }
+    .zone-action-bar { display: flex; gap: 10px; align-items: center; margin: 2px 0 14px; }
+    /* The servers card used to be inset 30px further than the room cards. */
+    .zones-controls { padding-left: 0; padding-right: 0; }
+    .zone-action-bar .btn-glass { display: inline-flex; align-items: center; gap: 8px; }
+    .zone-action-bar .btn-glass.active {
+      background: rgba(255,255,255,0.16); border-color: var(--hair-strong); color: #fff;
+    }
+    .zone-action-bar .btn-glass svg { width: 17px; height: 17px; stroke: currentColor;
+      fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    /* the room name is a heading, not a form field */
+    .zone-header input[type="text"] { background: transparent; border: none; padding: 2px 0; font-weight: 600; font-size: 1rem; }
+    .data-label .stat-pill { text-transform: none; letter-spacing: 0; }
+    .menu-bar .nav-btn svg { stroke-linecap: round; stroke-linejoin: round; }
+    .control-card { padding: 16px 18px; }
+    .tab-content { padding: 6px 26px 26px; }
+
+    .section-title {
+      font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em;
+      background: none; -webkit-background-clip: border-box;
+      -webkit-text-fill-color: currentColor; color: #fff; text-shadow: none;
+    }
+    .sticky-shell {
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+      backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+      border-bottom: 1px solid var(--hair);
+    }
+    .data-label {
+      font-size: .74rem; text-transform: uppercase; letter-spacing: .12em;
+      color: var(--text-muted); font-weight: 600;
+    }
+    .muted { color: var(--text-muted); }
+
+    /* Rows ------------------------------------------------------------------- */
+    .enc-field { border-bottom: 1px solid var(--hair); padding: 12px 0; }
+    .enc-field:last-child { border-bottom: none; }
+    .enc-target-row { gap: 14px; }
+    .node-chip {
+      background: rgba(255,255,255,0.05); border: 1px solid var(--hair);
+      border-radius: 14px; padding: 11px 13px;
+    }
+    .node-chip:hover { background: rgba(255,255,255,0.09); transform: none; }
+    .zone-header input {
+      background: transparent; border: none; font-size: 1rem; font-weight: 600;
+      color: var(--text-main); padding: 4px 0;
+    }
+    .zone-header { border-bottom: 1px solid var(--hair); padding-bottom: 10px; }
+    .zone-row { color: var(--text-muted); }
+
+    /* Controls --------------------------------------------------------------- */
+    .btn-glass, .btn {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid var(--hair);
+      border-radius: 999px;
+      color: var(--text-main);
+      padding: 8px 16px; font-size: .85rem; font-weight: 550;
+      transition: background .18s ease, border-color .18s ease;
+    }
+    .btn-glass:hover, .btn:hover { background: rgba(255,255,255,0.12); border-color: var(--hair-strong); }
+    .btn-primary {
+      background: linear-gradient(135deg, #9db6ff, #b48cff);
+      border: none; border-radius: 999px; color: #0b0a16;
+      font-weight: 650; padding: 9px 18px;
+      box-shadow: 0 6px 20px rgba(150,140,255,.28);
+    }
+    .btn-primary:hover { filter: brightness(1.06); }
+    .btn-primary:disabled, .btn:disabled, .btn-glass:disabled { opacity: .45; cursor: default; }
+
+    select, input[type="text"], input[type="number"], input[type="file"] {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid var(--hair);
+      border-radius: 12px;
+      color: var(--text-main);
+      padding: 8px 12px;
+      font-size: .88rem;
+    }
+    select:focus, input:focus { outline: none; border-color: var(--accent-primary); }
+
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      height: 6px; border-radius: 999px;
+      background: rgba(255,255,255,0.14);
+      accent-color: var(--accent-secondary);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #fff; border: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,.45);
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; border: none; cursor: pointer;
+    }
+
+    .stat-pill, .tel-pill {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--hair);
+      border-radius: 10px;
+    }
+
+    /* Modals ----------------------------------------------------------------- */
+    .ota-modal-backdrop { background: rgba(4,4,10,0.62); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    .ota-modal-panel {
+      background: linear-gradient(180deg, rgba(30,30,52,0.94), rgba(16,16,30,0.96));
+      border: 1px solid var(--hair-strong);
+      border-radius: 24px;
+      box-shadow: 0 30px 80px rgba(0,0,0,.6);
+    }
+    .ota-modal-header { padding: 18px 22px 6px; }
+    .ota-modal-body { padding: 10px 22px 6px; }
+    .ota-modal-footer { padding: 14px 22px 20px; }
+
+    #toast {
+      background: rgba(20,20,36,0.95);
+      border: 1px solid var(--hair-strong);
+      border-radius: 14px;
+      box-shadow: 0 12px 30px rgba(0,0,0,.5);
+    }
+
+    .rec-overlay { background: rgba(4,4,10,0.65); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    .rec-panel { border-radius: 22px; }
+
+    @media (max-width: 640px) {
+      .top-bar { padding: 16px 16px 10px; }
+      .menu-bar { margin-left: 0; width: 100%; overflow-x: auto; }
+      .tab-content { padding: 4px 16px 18px; }
+      .zone-box, .control-card { border-radius: 18px; }
+    }
+
+/* ===== ESP-only components (source row, OTA wizard, telemetry) ===== */
+
+
+    .master-label { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; white-space: nowrap; }
+
+    .master-label b { color: var(--text-main); margin-left: 6px; }
+
+    @media (min-width: 720px) {
+ .grid.single { grid-template-columns: 1fr; }
+}
+
+    .zones-mode-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+    .zones-volume-row #volume {
+      flex: 1 1 auto; -webkit-appearance: none;
+      height: 6px; background: rgba(255,255,255,0.2);
+      border-radius: 3px; outline: none;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+    }
+
+    .zones-volume-row #volume::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
+      background: #fff; cursor: pointer; border: 2px solid var(--accent-secondary);
+      box-shadow: 0 0 15px rgba(0,210,255,0.8);
+    }
+
+    .zones-volume-row #volume::-moz-range-thumb {
+      width: 18px; height: 18px; border-radius: 50%; background: #fff; cursor: pointer;
+      border: 2px solid var(--accent-secondary); box-shadow: 0 0 15px rgba(0,210,255,0.8);
+    }
+
+    .zones-volume-row .icon-btn { flex: 0 0 auto; }
+
+    .ota-steps { display: flex; gap: 8px; align-items: center; }
+
+    .ota-step-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.15); transition: all .3s ease; }
+
+    .ota-step-dot.active { width: 22px; border-radius: 4px; background: var(--accent-primary); box-shadow: 0 0 10px var(--accent-primary); }
+
+    .ota-step-dot.done { background: var(--success); }
+
+    .ota-step { display: none; }
+
+    .ota-step.active { display: block; animation: fadeIn .3s ease forwards; }
+
+    .ota-step h3 { font-size: 1.15rem; margin-bottom: 10px; font-weight: 700; background: linear-gradient(to right,#00d2ff,#8e2de2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+    .ota-step p { font-size: .88rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.45; }
+
+    .ota-step code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px; font-size: .82rem; color: var(--text-main); }
+
+    .ota-progress-bar { height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; margin-top: 14px; overflow: hidden; }
+
+    .ota-progress-fill { height: 100%; width: 0%; background: linear-gradient(to right,#00d2ff,#8e2de2); transition: width .4s ease; }
+
+    .ota-current-wrap { margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); display: none; }
+
+    .ota-current-wrap.visible { display: block; }
+
+    .ota-current-wrap .checkbox span { font-size: .88rem; }
+
+    .ota-current-wrap b { color: var(--accent-primary); margin-left: 4px; }
+
+    .ota-target-row { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; transition: opacity .2s, filter .2s; }
+
+    .ota-target-row.disabled { opacity: .32; filter: grayscale(.6); }
+
+    .ota-target-row .checkbox span { font-size: .88rem; }
+
+    .ota-target-row .checkbox input[type=checkbox]:disabled { cursor: not-allowed; }
+
+    .ota-server-meta { font-size: .76rem; color: var(--text-muted); margin-top: 6px; margin-left: 28px; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; }
+
+    .ota-targets-list { max-height: 260px; overflow-y: auto; transition: opacity .2s, filter .2s; }
+
+    .ota-targets-list.disabled { opacity: .32; filter: grayscale(.6); pointer-events: none; }
+
+    .ota-section-label { font-size: .72rem; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-muted); margin: 4px 0 8px; }
+
+    .ota-node-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+
+    .ota-select-all { margin: 0; gap: .4rem; text-transform: none; letter-spacing: 0; font-size: .75rem; font-weight: 600; color: var(--text-muted); cursor: pointer; user-select: none; }
+
+    .ota-select-all input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent-primary); cursor: pointer; }
+
+    .ota-select-all input:disabled { cursor: not-allowed; opacity: .4; }
+
+    .ota-select-all input:disabled + span { opacity: .4; }
+
+    .ota-node-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 8px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; cursor: pointer; transition: background .2s, border-color .2s; font-size: .88rem; }
+
+    .ota-node-item:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.15); }
+
+    .ota-node-item input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent-primary); flex: 0 0 auto; margin: 0; }
+
+    .ota-node-item input[type=checkbox]:disabled { cursor: not-allowed; }
+
+    .ota-node-body { flex: 1 1 auto; min-width: 0; }
+
+    .ota-node-name { font-weight: 600; font-size: .9rem; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .ota-node-ip { font-size: .76rem; color: var(--text-muted); font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; margin-top: 2px; }
+
+    .ota-node-ver { flex: 0 0 auto; font-size: .78rem; color: var(--text-muted); text-align: right; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; }
+
+    .ota-node-ver .new { color: var(--accent-primary); font-weight: 600; }
+
+    .ota-spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.2); border-top-color: var(--accent-primary); border-radius: 50%; animation: busySpin .8s linear infinite; display: inline-block; vertical-align: middle; }
+
+    @keyframes busySpin { to { transform: rotate(360deg); } }
+
+    .ok-tick { color: var(--success); font-size: 1.2rem; font-weight: bold; }
+
+    .bad-x { color: var(--danger); font-size: 1.2rem; font-weight: bold; }
+
+
+    /* ---- OTA wizard live log pane ------------------------------------- */
+    .ota-log-wrap { margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px; display: none; }
+
+    .ota-log-wrap.visible { display: block; }
+
+    .ota-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+
+    .ota-log-header span { font-size: .74rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
+
+    .ota-log-toggle { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: var(--text-muted); padding: 3px 10px; border-radius: 6px; font: inherit; font-size: .72rem; cursor: pointer; min-height: 26px; }
+
+    .ota-log-toggle:hover { background: rgba(255,255,255,0.14); color: var(--text-main); }
+
+    .ota-log-pre { margin: 0; padding: 10px 12px; max-height: 180px; overflow-y: auto; background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .72rem; line-height: 1.45; white-space: pre-wrap; word-break: break-all; color: #cbd5e1; }
+
+    .ota-log-pre .lg-e { color: #f87171; }
+
+    .ota-log-pre .lg-w { color: #fbbf24; }
+
+    .ota-log-pre .lg-i { color: #cbd5e1; }
+
+
+    /* ---- Wi-Fi scan modal (node-parity overlay/modal) ---------------- */
+    .wifi-modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.7); }
+
+    .wifi-modal.open { display: flex; }
+
+    .wifi-modal-panel { position: relative; width: 100%; max-width: 460px; background: linear-gradient(135deg, rgba(30,30,45,.95), rgba(15,15,25,.95)); border: 1px solid rgba(255,255,255,0.15); border-radius: 20px 20px 0 0; padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); overflow: hidden; display: flex; flex-direction: column; max-height: 80vh; }
+
+    .wifi-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+    .wifi-modal-body { max-height: 46vh; overflow-y: auto; margin: 12px 0 0; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; }
+
+    .wifi-net { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 14px 12px; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--text-main); font: inherit; cursor: pointer; min-height: 48px; transition: background .15s ease; }
+
+    .wifi-net:last-child { border-bottom: 0; }
+
+    .wifi-net:hover { background: rgba(255,255,255,0.05); }
+
+    .wifi-net .rssi { color: var(--text-muted); font-size: .82rem; flex: 0 0 auto; }
+
+    .top-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: nowrap; margin-left: auto; }
+
+    .icon-btn { width: 40px; height: 40px; padding: 0; border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: var(--text-main); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; font-size: 1.15rem; line-height: 1; transition: background .2s ease, border-color .2s ease; flex: 0 0 auto; }
+
+    .icon-btn:hover { background: rgba(255,255,255,0.14); }
+
+    .icon-btn.active { background: linear-gradient(135deg,#00d2ff,#8e2de2); border-color: transparent; color: #fff; box-shadow: 0 0 14px rgba(0,210,255,0.45); }
+
+    .icon-btn.danger { color: var(--danger); border-color: rgba(239,68,68,0.5); }
+
+
+    .volume-float { display: none; }
+
+    #src-log { font-family: ui-monospace, Consolas, monospace; }
+
+
+    @media (max-width: 600px) {
+
+      .control-row #volume, .control-row .master-label { display: none; }
+}
+
+
+    @media (prefers-reduced-motion: reduce) {
+
+      .nav-btn, .mode-btn, .btn-glass, .control-card, .zone-box, .node-chip, .gear, .tab-content, input, select, .checkbox, .ota-modal, .ota-modal-panel, .ota-step, .ota-progress-fill, .ota-step-dot, .ota-close, .btn-primary, .ota-node-item, .ota-target-row, .sub-tab-btn, .rec-progress-fill {
+        transition: none !important; animation: none !important;
+      }
+}
+
     .page-title, .brand-title {
       background: none; -webkit-text-fill-color: currentColor; color: #fff;
       text-shadow: none; font-weight: 650; letter-spacing: -0.02em;
     }
 
-    .nav-btn {
-      border: 1px solid var(--hair); background: rgba(255,255,255,0.05);
-      border-radius: 999px; color: var(--text-muted);
-      padding: 8px 15px; font-weight: 550;
-      transition: background .18s ease, color .18s ease, border-color .18s ease;
-    }
-    .nav-btn:hover { background: rgba(255,255,255,0.10); color: #fff; }
-    .nav-btn.active {
-      background: rgba(255,255,255,0.15); color: #fff;
-      border-color: var(--hair-strong);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
-    }
-
-    .section-title {
-      background: none; -webkit-text-fill-color: currentColor; color: #fff;
-      text-shadow: none; font-weight: 600; letter-spacing: -0.01em;
-    }
     .control-card, .zone-box, .enc-card, .ota-modal-panel {
       background: rgba(255,255,255,0.055);
       border: 1px solid var(--hair);
@@ -450,48 +707,12 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       box-shadow: none;
       backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     }
-    .zone-box { border-radius: 22px; }
-    .node-chip {
-      background: rgba(255,255,255,0.05); border: 1px solid var(--hair);
-      border-radius: 14px;
-    }
-    .node-chip:hover { background: rgba(255,255,255,0.09); transform: none; }
 
-    .btn-glass, .btn {
-      background: rgba(255,255,255,0.07); border: 1px solid var(--hair);
-      border-radius: 999px; color: var(--text-main); font-weight: 550;
-    }
-    .btn-glass:hover, .btn:hover { background: rgba(255,255,255,0.12); border-color: var(--hair-strong); }
-    .btn-primary {
-      background: linear-gradient(135deg, #9db6ff, #b48cff);
-      border: none; border-radius: 999px; color: #0b0a16; font-weight: 650;
-      box-shadow: 0 6px 20px rgba(150,140,255,.28);
-    }
     select, input[type="text"], input[type="number"], input[type="file"], textarea {
       background: rgba(0,0,0,0.25); border: 1px solid var(--hair);
       border-radius: 12px; color: var(--text-main);
     }
-    input[type="range"] { accent-color: var(--accent-secondary); }
-    input[type="range"]::-webkit-slider-thumb {
-      -webkit-appearance: none; appearance: none;
-      width: 18px; height: 18px; border-radius: 50%;
-      background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.45);
-    }
-    .stat-pill, .tel-pill {
-      background: rgba(255,255,255,0.06); border: 1px solid var(--hair);
-      border-radius: 10px;
-    }
-    .ota-modal-backdrop { background: rgba(4,4,10,0.62); backdrop-filter: blur(8px); }
-    .ota-modal-panel {
-      background: linear-gradient(180deg, rgba(30,30,52,0.94), rgba(16,16,30,0.96));
-      border: 1px solid var(--hair-strong); border-radius: 24px;
-    }
-    #toast {
-      background: rgba(20,20,36,0.95);
-      border: 1px solid var(--hair-strong); border-radius: 14px;
-    }
-
-  </style>
+</style>
 </head>
 <body>
   <div id="top-loading-bar" aria-hidden="true"></div>
@@ -514,10 +735,22 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         </div>
 
         <nav class="menu-bar">
-          <button type="button" class="nav-btn active" onclick="openTab(event, 'tab-zones')">Zones</button>
-          <button type="button" class="nav-btn"        onclick="openTab(event, 'tab-settings')">Network</button>
-          <button type="button" class="nav-btn"        onclick="openTab(event, 'tab-advanced')">Advanced</button>
-          <button type="button" class="nav-btn"        onclick="openUpdateWizard()">Update</button>
+          <button type="button" class="nav-btn active" onclick="openTab(event, 'tab-zones')">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
+            Zones
+          </button>
+          <button type="button" class="nav-btn" onclick="openTab(event, 'tab-settings')">
+            <svg viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.2" fill="currentColor" stroke="none"/></svg>
+            Network
+          </button>
+          <button type="button" class="nav-btn" onclick="openTab(event, 'tab-advanced')">
+            <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="15" cy="6" r="2.2"/><circle cx="9" cy="12" r="2.2"/><circle cx="14" cy="18" r="2.2"/></svg>
+            Advanced
+          </button>
+          <button type="button" class="nav-btn" onclick="openUpdateWizard()">
+            <svg viewBox="0 0 24 24"><path d="M12 4v10m0 0l-4-4m4 4l4-4M5 19h14"/></svg>
+            Update
+          </button>
         </nav>
 
         <div class="top-actions">
@@ -537,16 +770,36 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     <!-- ======================= TAB: ZONES ======================= -->
     <div id="tab-zones" class="tab-content active">
+      <!-- [layout-parity] Servers card lives at the top of Zones, like the PC
+           dashboard. It used to sit in Advanced > Status. -->
+      <div class="control-card" style="margin: 0 30px 16px;">
+        <div class="data-label" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          Servers
+          <span class="stat-pill" id="srv-role">role …</span>
+          <span class="stat-pill" id="srv-leader">leader …</span>
+        </div>
+        <p class="muted" style="font-size:0.78rem;margin:6px 0 0;">Drag to set which server the nodes use &mdash; top row = preferred. Only the leader answers node discovery.</p>
+        <div id="serverList" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+        <div class="log-controls" style="margin-top:10px;align-items:center;">
+          <span class="muted" style="font-size:0.78rem;">Priority (1 = highest)</span>
+          <input type="number" id="srv-priority" min="1" max="99" style="width:70px;padding:6px;border-radius:8px;border:1px solid #343440;background:#0d0d12;color:var(--text);">
+          <button type="button" class="btn-glass" onclick="applyPriority()">Apply</button>
+          <span class="muted" id="srv-state" style="font-size:0.78rem;"></span>
+        </div>
+      </div>
+      <!-- [layout-parity] Full-width action bar under the Servers card. -->
+      <div style="padding: 0 30px; margin-bottom: 14px; display:flex; gap:10px; align-items:center;">
+        <button type="button" class="btn-glass" onclick="createNewZone()"
+                style="border-color: var(--accent-primary); color: var(--accent-primary); padding: 6px 12px; font-size: 0.85rem;">
+          + Add Room
+        </button>
+      </div>
       <div class="zones-controls" style="padding-bottom: 0;">
         
-        <!-- Moved + Add Room next to title -->
+        <!-- [layout-parity] + Add Room moved to the action bar (PC layout) -->
         <div class="zone-toolbar" style="flex-wrap:wrap;gap:10px; margin-bottom: 10px; display: flex; justify-content: flex-start; align-items: center; width: 100%;">
           <div style="display:flex;gap:10px;align-items:center;">
             <h2 class="section-title" style="margin:0;">Zone Architecture</h2>
-            <button type="button" class="btn-glass" onclick="createNewZone()"
-                    style="border-color: var(--accent-primary); color: var(--accent-primary); padding: 6px 12px; font-size: 0.85rem;">
-              + Add Room
-            </button>
           </div>
         </div>
 
@@ -644,23 +897,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           <span class="stat-pill" id="stat-psram" title="PSRAM used" style="display:none">PS-%</span>
         </div>
 
-        <!-- [servers-decide] Multi-server election: role + draggable priority -->
-        <div class="control-card" style="margin-top:16px;">
-          <div class="data-label" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            Servers
-            <span class="stat-pill" id="srv-role">role …</span>
-            <span class="stat-pill" id="srv-leader">leader …</span>
-          </div>
-          <p class="muted" style="font-size:0.78rem;margin:6px 0 0;">Drag to set which server the nodes use &mdash; top row = preferred. Only the leader answers node discovery.</p>
-          <div id="serverList" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
-          <div class="log-controls" style="margin-top:10px;align-items:center;">
-            <span class="muted" style="font-size:0.78rem;">Priority (1 = highest)</span>
-            <input type="number" id="srv-priority" min="1" max="99" style="width:70px;padding:6px;border-radius:8px;border:1px solid #343440;background:#0d0d12;color:var(--text);">
-            <button type="button" class="btn-glass" onclick="applyPriority()">Apply</button>
-            <span class="muted" id="srv-state" style="font-size:0.78rem;"></span>
-          </div>
-        </div>
-
+        <!-- [servers-decide] Multi-server election card moved to TAB: ZONES -->
         <h2 class="section-title" style="font-size:1rem;margin-bottom:10px;">Stream Telemetry</h2>
         <div class="telemetry-bar">
           <span class="tel-pill"><b id="stat-mode">--</b>mode</span>

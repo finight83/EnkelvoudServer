@@ -1,7 +1,7 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.4.4"
+#define EVD_FW_VERSION "3.9.4.6"
 // 3.9.4.4: peer beacons carry the fleet node list; a standby displays the
 //          leader's nodes and, on takeover, sends server_ready to them so the
 //          failover is instant instead of waiting for node re-discovery.
@@ -613,3 +613,5 @@ inline void handleClockSyncRequests();
 #include "EVDPeers.h"
 #include "EVDRoutes.h"
 #include "EVDMain.h"
+
+
