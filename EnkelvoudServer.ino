@@ -1,7 +1,11 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.4.2"
+#define EVD_FW_VERSION "3.9.4.3"
+// 3.9.4.3: raise the audioEncode task stack 8 KB -> 16 KB. opus_encode's CELT
+//          path overflowed the old stack (stack-canary watchpoint in
+//          celt_preemphasis) once a session encoded at 48 kHz, boot-looping
+//          the board.
 // 3.9.4.2: fix /api/state invalid JSON (peer election fields were appended
 //          inside the still-open "zones":[ array), which broke the dashboard
 //          and any client parsing state while a peer server was present.

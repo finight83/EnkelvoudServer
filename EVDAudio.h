@@ -1332,11 +1332,17 @@ inline void audioEncodeTask(void *param) {
   (void)param;
   LOGI("audioEncodeTask started on core %d", xPortGetCoreID());
   // [core-split-encode-stack] ef is 3846 B, pkt is 1036 B. Both live in BSS
-  // via `static` so the task stack only pays for opus_encode's internals
-  // (~2–3 KB) plus this function's small locals. Non-static put ~4.8 KB of
-  // frame buffers on the 8 KB stack, leaving almost no margin for a
-  // complex-frame encode. audioProcTask has used the same `static` pattern
-  // for its scratch buffers since the two-stage resampler landed.
+  // via `static` so the task stack only pays for opus_encode's internals plus
+  // this function's small locals.
+  //
+  // [encode-stack-16k] 8 KB was NOT enough: a stack-canary watchpoint fired
+  // inside celt_preemphasis/celt_encode_with_ec (opus_encode) on the first
+  // frame after a boot, i.e. a genuine stack overflow, not a code fault. The
+  // CELT encoder's VARDECL arrays scale with the frame size (960 samples at
+  // 48 kHz stereo) and exceed what the old comment assumed ("~2-3 KB"); the
+  // overflow boot-loop only appeared once a session actually encoded at
+  // 48 kHz. 16 KB leaves real headroom. If the heap is too tight for this,
+  // task creation logs the failure instead of silently running without audio.
   static EncodeFrame ef;
   static OpusPacket pkt;
 
@@ -1383,6 +1389,15 @@ inline void audioEncodeTask(void *param) {
     if (g_pendingOpusSampleRate != 0) handleEncoderRecreate();
 
     if (xQueueReceive(encodeQueue, &ef, portMAX_DELAY) != pdTRUE) continue;
+
+    // [servers-decide] A standby server does not stream, so there is no point
+    // encoding: drain the frame (keeping the pipeline flowing) and skip
+    // opus_encode entirely. This also keeps a booting standby from touching
+    // the encoder path before the election has settled.
+    if (!g_peerIsLeader) {
+      statOpusDropped++;
+      continue;
+    }
 
     if (opusEncoder == nullptr) {
       static unsigned long lastWarnMs = 0;
@@ -1608,7 +1623,7 @@ inline void setup_queues_and_tasks() {
 
   // [core-assign-audioread] Core 1: audioRead(6) + audioEncode(5). Nothing
   // else may be added to this core - see the rationale block above.
-  rc = xTaskCreatePinnedToCore(audioEncodeTask, "audioEncode", 8192, nullptr, 5, nullptr, 1);
+  rc = xTaskCreatePinnedToCore(audioEncodeTask, "audioEncode", 16384, nullptr, 5, nullptr, 1);
   if (rc != pdPASS) LOGE("FAILED to create audioEncodeTask (rc=%d)", (int)rc);
 
   LOGI("Tasks created: udpSend(c0,p3) audioProc(c0,p2) clockSync(c0,p3) "
