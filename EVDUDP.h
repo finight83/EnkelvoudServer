@@ -194,7 +194,6 @@ inline void udpSendTask(void *param) {
     if (!g_peerIsLeader) {
       if (xQueueReceive(opusQueue, &pkt, pdMS_TO_TICKS(20)) == pdTRUE) {
         statOpusDropped++;
-        statFramesDroppedTotal++;
       }
       continue;
     }
