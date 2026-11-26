@@ -879,7 +879,8 @@ inline void handleApiConfig(AsyncWebServerRequest *request, uint8_t *data,
       serverName = newName;
       // [mdns-rename] Without this, mDNS kept the OLD name until reboot,
       // so <newName>.local never resolved and the old one still did.
-      if (WiFi.status() == WL_CONNECTED) {
+      // [servers-decide] Only the leader owns mDNS; a standby has none.
+      if (WiFi.status() == WL_CONNECTED && g_peerIsLeader) {
         MDNS.end();
         if (MDNS.begin(serverName.c_str())) {
           MDNS.addService("http",     "tcp", 80);

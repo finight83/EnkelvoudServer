@@ -342,14 +342,12 @@ void setup() {
   // loop(). Do NOT try to detect it here.
   setup_wifi_sta();
 
+  // [servers-decide] mDNS is owned by the ELECTED LEADER (EVDPeers.h): a
+  // standby must not claim <name>.local, or it fights the PC for the name and
+  // nodes can resolve a server that will not serve them. A single-server
+  // board is promoted by the first peerTick and registers its mDNS then.
   if (WiFi.status() == WL_CONNECTED) {
-    if (MDNS.begin(serverName.c_str())) {
-      MDNS.addService("http",     "tcp", 80);
-      MDNS.addService("enkelsrv", "tcp", 80);
-      LOGI("mDNS available at http://%s.local/", serverName.c_str());
-    } else {
-      LOGW("mDNS startup failed");
-    }
+    LOGI("mDNS: owned by the leader; peerSetup/peerEval will register it");
   }
 
   // [opus-sample-rate] If loadWiFiSettings() -> applyModeSettingsToLive()

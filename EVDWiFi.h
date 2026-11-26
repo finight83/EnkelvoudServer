@@ -505,7 +505,7 @@ inline void networkTestTask(void *parameter) {
     return;
   }
   accessPointActive = false;
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED && g_peerIsLeader) {
     MDNS.end();
     if (MDNS.begin(serverName.c_str())) {
       MDNS.addService("http",     "tcp", 80);

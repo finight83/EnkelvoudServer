@@ -216,8 +216,12 @@ volatile bool otaPauseAudio = false;
 // ---- Multi-server election (P3: servers decide, see EVDPeers.h) ------------
 // g_peerIsLeader is read by udpSendTask (Core 0), the discovery responder,
 // the registration handler and the HTTP task; it is written by peerEval()
-// from loop() (Core 1), hence volatile. Single-server installs stay true.
-volatile bool g_peerIsLeader = true;
+// from loop() (Core 1), hence volatile.
+// [servers-decide] Starts FALSE: a booting board is a standby until the first
+// election tick promotes it (single-server installs promote within ~1 s).
+// Starting true made every boot briefly answer discovery and claim mDNS
+// while the PC was already the leader.
+volatile bool g_peerIsLeader = false;
 int           g_peerPriority = 2;   // 1 = highest; PC defaults to 1
 
 // ---- Objects ---------------------------------------------------------------
