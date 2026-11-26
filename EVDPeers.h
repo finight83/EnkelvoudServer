@@ -66,6 +66,18 @@ static String           g_selfPeerId;
 static bool             g_peerMdnsLeader = false;
 static WiFiUDP          peerUdp;
 
+// [node-sharing] The leader broadcasts its registered fleet in every beacon.
+// A standby keeps the last leader's list: its dashboard shows those nodes
+// (instead of "Offline") and, when it takes over, it tells them to connect.
+struct PeerNodeInfo {
+  String ip;
+  String name;
+  String ver;
+};
+static PeerNodeInfo     g_leaderNodes[16];
+static int              g_leaderNodeCount = 0;
+static unsigned long    g_readyNotifyUntilMs = 0;
+
 // ---- NVS priority ----------------------------------------------------------
 
 inline void peerLoadPriority() {
@@ -127,7 +139,7 @@ inline void peerBroadcastTargets(IPAddress out[2], int &n) {
 }
 
 inline void peerSendBeacon() {
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<1024> doc;
   doc["e"]        = PEER_PROTOCOL;
   doc["id"]       = g_selfPeerId;
   doc["name"]     = serverName;
@@ -136,8 +148,23 @@ inline void peerSendBeacon() {
   doc["httpPort"] = 80;
   doc["uptimeMs"] = (unsigned long)millis();
   doc["version"]  = FW_VERSION;
+  // [node-sharing] The fleet this server serves (the leader's list is what
+  // standbys display and use to guide nodes over after a failover).
+  {
+    std::vector<PlayerNode> ps = snapshotPlayers(millis());
+    JsonArray na = doc.createNestedArray("nodes");
+    int cnt = 0;
+    for (auto &p : ps) {
+      if (cnt >= 16) break;
+      JsonObject o = na.createNestedObject();
+      o["ip"]   = p.ip;
+      o["name"] = p.name;
+      o["ver"]  = p.version;
+      cnt++;
+    }
+  }
 
-  char buf[288];
+  char buf[1024];
   size_t n = serializeJson(doc, buf, sizeof(buf));
   if (n == 0) return;
 
@@ -194,6 +221,21 @@ inline void peerHandlePacket(int sz) {
   g_peers[slot].httpPort   = port;
   g_peers[slot].uptimeMs   = uptime;
   g_peers[slot].lastSeenMs = now;
+  // [node-sharing] A leader's beacon carries its fleet; keep the last one.
+  if (pledge) {
+    g_leaderNodeCount = 0;
+    JsonArray arr = doc["nodes"].as<JsonArray>();
+    for (JsonObject n : arr) {
+      if (g_leaderNodeCount >= 16) break;
+      String nip = String((const char *)(n["ip"] | ""));
+      nip.trim();
+      if (!nip.length()) continue;
+      g_leaderNodes[g_leaderNodeCount].ip   = nip;
+      g_leaderNodes[g_leaderNodeCount].name = String((const char *)(n["name"] | ""));
+      g_leaderNodes[g_leaderNodeCount].ver  = String((const char *)(n["ver"] | ""));
+      g_leaderNodeCount++;
+    }
+  }
   unlockFor(g_peerMutex);
 }
 
@@ -209,6 +251,45 @@ inline void peerNotifyStandby() {
   if (!subs.empty()) {
     LOGI("peers: told %d node(s) to re-discover", (int)subs.size());
   }
+}
+
+inline void peerNotifyReady() {
+  // [node-sharing] Announce to the previous leader's fleet (and our own
+  // subscribers) that this server is now the one to connect to. The nodes
+  // accept it only after their old server has gone quiet.
+  int sent = 0;
+  if (lockFor(g_peerMutex, 20)) {
+    for (int i = 0; i < g_leaderNodeCount; i++) {
+      if (!g_leaderNodes[i].ip.length()) continue;
+      sendCtrlToSubscriber(g_leaderNodes[i].ip,
+                           String("{\"type\":\"server_ready\"}"));
+      sent++;
+    }
+    unlockFor(g_peerMutex);
+  }
+  std::vector<SubscriberSnap> subs = snapshotSubscribers(millis());
+  for (auto &s : subs) {
+    sendCtrlToSubscriber(s.ip, String("{\"type\":\"server_ready\"}"));
+    sent++;
+  }
+  if (sent) LOGI("peers: announced 'connect here' to %d node(s)", sent);
+}
+
+// [node-sharing] Name/version of a fleet node learned from the leader.
+inline bool peerNodeInfo(const String &ip, String &name, String &ver) {
+  bool found = false;
+  if (lockFor(g_peerMutex, 20)) {
+    for (int i = 0; i < g_leaderNodeCount; i++) {
+      if (g_leaderNodes[i].ip == ip) {
+        name  = g_leaderNodes[i].name;
+        ver   = g_leaderNodes[i].ver;
+        found = true;
+        break;
+      }
+    }
+    unlockFor(g_peerMutex);
+  }
+  return found;
 }
 
 inline void peerEval() {
@@ -244,6 +325,10 @@ inline void peerEval() {
   peerApplyMdnsRole(isLeader);
   if (isLeader) {
     LOGI("peers: LEADER - answering nodes (priority %d)", g_peerPriority);
+    // Announce to the fleet we learned from the old leader, repeatedly for
+    // ~4 s so a lost UDP datagram cannot strand a node.
+    g_readyNotifyUntilMs = millis() + 4000;
+    peerNotifyReady();
   } else {
     LOGW("peers: STANDBY - %s outranks this server (priority %d)",
          bestId.c_str(), g_peerPriority);
@@ -266,6 +351,8 @@ inline void peerSetup() {
   // a booting standby answer node discovery and fight the PC for mDNS.
   g_peerIsLeader   = false;
   g_peerMdnsLeader = false;
+  g_leaderNodeCount = 0;
+  g_readyNotifyUntilMs = 0;
   if (peerUdp.begin(PEER_PORT)) {
     LOGI("peers: UDP %d, id %s, priority %d",
          PEER_PORT, g_selfPeerId.c_str(), g_peerPriority);
@@ -290,6 +377,13 @@ inline void peerTick() {
     g_peerLastBeaconMs = now;
     peerSendBeacon();
     peerEval();
+    // [node-sharing] Repeat the takeover announcement inside the window.
+    if (g_peerIsLeader && g_readyNotifyUntilMs != 0 &&
+        (long)(now - g_readyNotifyUntilMs) < 0) {
+      peerNotifyReady();
+    } else if (g_readyNotifyUntilMs != 0) {
+      g_readyNotifyUntilMs = 0;
+    }
   }
 }
 

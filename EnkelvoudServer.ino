@@ -1,7 +1,10 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.4.3"
+#define EVD_FW_VERSION "3.9.4.4"
+// 3.9.4.4: peer beacons carry the fleet node list; a standby displays the
+//          leader's nodes and, on takeover, sends server_ready to them so the
+//          failover is instant instead of waiting for node re-discovery.
 // 3.9.4.3: raise the audioEncode task stack 8 KB -> 16 KB. opus_encode's CELT
 //          path overflowed the old stack (stack-canary watchpoint in
 //          celt_preemphasis) once a session encoded at 48 kHz, boot-looping

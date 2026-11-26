@@ -49,6 +49,16 @@ inline void appendZoneJson(String &body, const Zone &z,
         known = true; break;
       }
     }
+    // [node-sharing] A standby has no registrations of its own; show the
+    // fleet the leader advertised instead of an "Offline" chip.
+    if (!known) {
+      String shiftName, shiftVer;
+      if (peerNodeInfo(ip, shiftName, shiftVer)) {
+        if (shiftName.length()) name = shiftName;
+        version = shiftVer;
+        known = true;
+      }
+    }
     if (!first) body += ",";
     body += "{\"name\":\"";
     body += jsonEscape(name);
