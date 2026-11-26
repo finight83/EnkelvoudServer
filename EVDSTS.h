@@ -433,10 +433,14 @@ inline void handleApiState(AsyncWebServerRequest *request) {
   }
 
   // [servers-decide] Election state for the dashboard's Servers card.
+  // Close the zones array FIRST: appending these fields inside the still-open
+  // "zones":[ produced invalid JSON, which broke the ESP dashboard (and any
+  // client parsing /api/state) whenever a peer was present.
+  body += "]";
   body += ",";
   body += peerBuildJson(false);
 
-  body += "]}";
+  body += "}";
 
   AsyncWebServerResponse *resp =
       request->beginResponse(200, "application/json", body);

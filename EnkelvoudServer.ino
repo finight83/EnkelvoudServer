@@ -1,7 +1,10 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.4.1"
+#define EVD_FW_VERSION "3.9.4.2"
+// 3.9.4.2: fix /api/state invalid JSON (peer election fields were appended
+//          inside the still-open "zones":[ array), which broke the dashboard
+//          and any client parsing state while a peer server was present.
 // 3.9.4.1: election ties now favour the longest-running server (an incumbent
 //          leader is not displaced by a tied newcomer); mDNS is owned by the
 //          leader only; a booting board starts as a standby instead of briefly
