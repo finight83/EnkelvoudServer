@@ -1,7 +1,16 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.4.10"
+#define EVD_FW_VERSION "3.9.4.11"
+// 3.9.4.11: [dashboard-layout] Dashboard rework, visible on the first load
+//           after flashing: CPU/RAM/PS pills under the title, menu is
+//           Zones / Network / Source / DLNA / Update / Analyze, Source is the
+//           BT/USB/AUX input selector, DLNA is its own page, Advanced is
+//           Encoding only, the Servers election card and master volume are
+//           gone, Quiet/Mute-all are the PC's pill buttons, and every node
+//           chip plus room header shows reported latency. If the page still
+//           looks old after flashing, this version string on the dashboard
+//           tells you the board is running the previous binary.
 // 3.9.4.10: source-board link honesty + BT/USB disagreement after a source
 //          OTA. SRC:<x> is now always followed by CMD:GET_BT_DEVICES, so the
 //          source answers with SRCSTAT and lastHeartbeatMsCache stops ageing

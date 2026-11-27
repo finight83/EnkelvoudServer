@@ -134,6 +134,12 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .mode-select:focus { outline: none; border-color: var(--accent-primary); }
     .mode-select option { background:#111116; color:#f6f6f8; }
 
+    /* [zone-action-bar] PC parity: pill buttons with inline icons. */
+    .zone-action-bar { display: flex; gap: 10px; align-items: center; margin: 2px 0 14px; flex-wrap: wrap; padding: 0 30px; }
+    .zone-action-bar .btn-glass { display: inline-flex; align-items: center; gap: 8px; }
+    .zone-action-bar .btn-glass.active { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.28); color: #fff; }
+    .zone-action-bar .btn-glass svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    /* [source-is-input-selector] BT / USB / AUX pills, PC pill styling. */
     .zone-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
     .zone-toolbar .section-title { margin: 0; }
     .zone-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
@@ -153,6 +159,12 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .node-chip:hover { background: rgba(255,255,255,0.12); transform: translateY(-2px); }
     .node-meta { min-width: 0; }
     .node-meta strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* [node-latency-chip] per-node latency, right of the IP, left of the actions */
+    .node-lat { flex: 0 0 auto; font-size: 0.72rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-muted); background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
+    .node-lat.warn { color: var(--warn); border-color: rgba(251,191,36,0.4); }
+    .node-chip.offline .node-lat { opacity: .6; }
+    .zone-lat { flex: 0 0 auto; font-size: 0.7rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-muted); border: 1px solid rgba(255,255,255,0.10); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+    .zone-lat.warn { color: var(--warn); border-color: rgba(251,191,36,0.4); }
     .node-ip { font-size: 0.75rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .gear { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: var(--accent-primary); font-size: 1.15rem; text-decoration: none; cursor: pointer; transition: all 0.2s; }
     .gear:hover { background: rgba(0,210,255,0.15); color: #fff; transform: scale(1.08); }
@@ -176,7 +188,11 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .tel-pill.warn b { color: var(--warn); }
     .tel-pill.crit b { color: var(--danger); }
 
-    /* ---- Stat pills row (CPU/RAM/PSRAM) under Advanced > Status ----- */
+    /* [pills-in-header] Load pills sit under the server name in the top bar. */
+    #header-stat-row { margin: 6px 0 0; gap: 6px; }
+    #header-stat-row .stat-pill { padding: 3px 9px; font-size: 0.68rem; }
+
+    /* ---- Stat pills row (CPU/RAM/PSRAM) ------------------------------ */
     .stat-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
     .stat-pill { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: var(--text-muted); padding: 4px 12px; border-radius: 12px; font-size: .72rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .5px; white-space: nowrap; }
     .stat-pill.warn { color: var(--warn); border-color: rgba(251,191,36,0.4); }
@@ -347,25 +363,30 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .page-title svg { opacity: .35; }
     .node-sub { color: var(--text-muted) !important; letter-spacing: .01em; }
 
-    .menu-bar {
-      margin-left: auto;
-      display: flex; align-items: center; gap: 2px;
-      padding: 5px;
-      border: 1px solid var(--hair);
-      border-radius: 999px;
-      background: rgba(255,255,255,0.05);
-    }
-    .menu-bar .nav-btn {
-      border: none; background: transparent; border-radius: 999px;
-      padding: 8px 15px; font-size: .86rem; font-weight: 550;
-      color: var(--text-muted); gap: 7px;
+    /* [menu-no-pillbox] The menu bar used to be one rounded capsule with every
+       button floating inside it. It is now just a row of separate pills, the
+       same as the PC dashboard: no border, no fill, no radius on the bar. */
+    .menu-bar { margin-left: auto; }
+    /* [source-is-a-menu-select] The input picker wears the nav-btn pill, so it
+       reads as part of the menu and not as a form control. */
+    .nav-select {
+      display: inline-flex; align-items: center; gap: 7px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 30px; padding: 8px 12px 8px 15px; cursor: pointer;
+      color: var(--text-muted); font-size: .86rem; font-weight: 550;
       transition: background .18s ease, color .18s ease;
     }
-    .menu-bar .nav-btn svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.6; }
-    .menu-bar .nav-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
-    .menu-bar .nav-btn.active { background: rgba(255,255,255,0.15); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.22); }
-    .menu-bar .nav-btn-primary { background: rgba(255,255,255,0.07); color: var(--text-muted); box-shadow: none; border: none; }
-    .menu-bar .nav-btn-primary:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    .nav-select:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .nav-select svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+    .nav-select-label { color: var(--text-muted); }
+    .nav-select select {
+      appearance: none; -webkit-appearance: none; border: none; background: transparent;
+      color: inherit; font: inherit; cursor: pointer; padding: 0 14px 0 0; margin: 0;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M0 0l5 6 5-6z' fill='%23cbd5e1'/></svg>");
+      background-repeat: no-repeat; background-position: right center;
+    }
+    .nav-select select:focus { outline: none; }
+    .nav-select option { background:#111116; color:#f6f6f8; }
 
     /* Surfaces --------------------------------------------------------------- */
     .control-card, .zone-box, .enc-card, .rec-panel, .ota-modal-panel {
@@ -504,7 +525,13 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     @media (max-width: 640px) {
       .top-bar { padding: 16px 16px 10px; }
-      .menu-bar { margin-left: 0; width: 100%; overflow-x: auto; }
+      .menu-bar { margin-left: 0; width: 100%; }
+      /* [menu-no-pillbox] Six pills overflow 390 px; keep them compact so the
+         row wraps into two lines instead of scrolling Update off-screen. */
+      .menu-bar .nav-btn { padding: 8px 11px; font-size: .8rem; gap: 5px; }
+      .menu-bar .nav-btn svg { width: 15px; height: 15px; }
+      .nav-select { padding: 7px 10px 7px 11px; font-size: .8rem; gap: 5px; }
+      .nav-select svg { width: 15px; height: 15px; }
       .tab-content { padding: 4px 16px 18px; }
       .zone-box, .control-card { border-radius: 18px; }
     }
@@ -679,7 +706,6 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     .volume-float { display: none; }
 
-    #src-log { font-family: ui-monospace, Consolas, monospace; }
 
 
     @media (max-width: 600px) {
@@ -732,6 +758,15 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
             </svg>
           </h1>
           <div class="node-sub" id="server-version" style="color:var(--text-muted);font-size:0.78rem;margin-top:2px;">firmware —</div>
+          <!-- [pills-in-header] System load moved out of Advanced > Status so it
+               is visible on every tab. IDs unchanged: refreshStatus() paints them. -->
+          <div class="stat-row" id="header-stat-row" aria-label="System load">
+            <span class="stat-pill" id="stat-core0" title="Core 0 CPU load">C0-%</span>
+            <span class="stat-pill" id="stat-core1" title="Core 1 CPU load">C1-%</span>
+            <span class="stat-pill" id="stat-ram" title="Internal heap used (max = largest contiguous free block)">RAM-%</span>
+            <span class="stat-pill" id="stat-dma" title="DMA-capable free bytes" style="display:none">DMA-%</span>
+            <span class="stat-pill" id="stat-psram" title="PSRAM used" style="display:none">PS-%</span>
+          </div>
         </div>
 
         <nav class="menu-bar">
@@ -743,13 +778,31 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
             <svg viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.2" fill="currentColor" stroke="none"/></svg>
             Network
           </button>
-          <button type="button" class="nav-btn" onclick="openTab(event, 'tab-advanced')">
-            <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="15" cy="6" r="2.2"/><circle cx="9" cy="12" r="2.2"/><circle cx="14" cy="18" r="2.2"/></svg>
-            Advanced
+          <!-- [source-is-a-menu-select] Source is not a page and not a button:
+               it is the input picker itself, sitting in the menu. It shows the
+               live input (BT by default) and BT / USB / AUX are its options. -->
+          <label class="nav-select" title="Input: Bluetooth, USB or AUX">
+            <svg viewBox="0 0 24 24"><path d="M4 10v4h3l4 3V7L7 10H4z"/><path d="M15.5 8.5a5 5 0 010 7"/><path d="M18 6a8.5 8.5 0 010 12"/></svg>
+            <span class="nav-select-label">Source</span>
+            <select id="source-select" aria-label="Input">
+              <option value="BT">BT</option>
+              <option value="USB">USB</option>
+              <option value="AUX">AUX</option>
+            </select>
+          </label>
+          <button type="button" class="nav-btn" onclick="openTab(event, 'tab-dlna')">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M7.5 7.5a6.4 6.4 0 000 9"/><path d="M16.5 7.5a6.4 6.4 0 010 9"/><path d="M4.5 4.5a10.6 10.6 0 000 15"/><path d="M19.5 4.5a10.6 10.6 0 010 15"/></svg>
+            DLNA
           </button>
           <button type="button" class="nav-btn" onclick="openUpdateWizard()">
             <svg viewBox="0 0 24 24"><path d="M12 4v10m0 0l-4-4m4 4l4-4M5 19h14"/></svg>
             Update
+          </button>
+          <!-- [analyze-in-menu] Analyze lives in the main menu, as on the PC
+               server. It is the only thing that turns logging on now. -->
+          <button type="button" class="nav-btn nav-btn-primary" id="analyzeBtn" title="Record up to 10 min — click Finish Now to end early">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
+            <span id="analyzeLabel">Analyze</span>
           </button>
         </nav>
 
@@ -762,36 +815,28 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       </div>
     </div>
 
-    <div class="volume-float" id="volumeFloat">
-      <span class="vf-value" id="volume-float-label">100</span>
-      <input type="range" id="volume-mobile" class="vol-vertical"
-             min="0" max="100" value="100" aria-label="Master volume">
-    </div>
-
     <!-- ======================= TAB: ZONES ======================= -->
     <div id="tab-zones" class="tab-content active">
-      <!-- [layout-parity] Servers card lives at the top of Zones, like the PC
-           dashboard. It used to sit in Advanced > Status. -->
-      <div class="control-card" style="margin: 0 30px 16px;">
-        <div class="data-label" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          Servers
-          <span class="stat-pill" id="srv-role">role …</span>
-          <span class="stat-pill" id="srv-leader">leader …</span>
-        </div>
-        <p class="muted" style="font-size:0.78rem;margin:6px 0 0;">Drag to set which server the nodes use &mdash; top row = preferred. Only the leader answers node discovery.</p>
-        <div id="serverList" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
-        <div class="log-controls" style="margin-top:10px;align-items:center;">
-          <span class="muted" style="font-size:0.78rem;">Priority (1 = highest)</span>
-          <input type="number" id="srv-priority" min="1" max="99" style="width:70px;padding:6px;border-radius:8px;border:1px solid #343440;background:#0d0d12;color:var(--text);">
-          <button type="button" class="btn-glass" onclick="applyPriority()">Apply</button>
-          <span class="muted" id="srv-state" style="font-size:0.78rem;"></span>
-        </div>
-      </div>
-      <!-- [layout-parity] Full-width action bar under the Servers card. -->
-      <div style="padding: 0 30px; margin-bottom: 14px; display:flex; gap:10px; align-items:center;">
-        <button type="button" class="btn-glass" onclick="createNewZone()"
-                style="border-color: var(--accent-primary); color: var(--accent-primary); padding: 6px 12px; font-size: 0.85rem;">
-          + Add Room
+      <!-- [zone-action-bar] Same bar as the PC server: Add Room, EQ, Quiet and
+           Mute all, all .btn-glass pills with 17 px icons. -->
+      <div class="zone-action-bar">
+        <button type="button" class="btn-glass" onclick="createNewZone()">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          Add Room
+        </button>
+        <button type="button" class="btn-glass" id="eqBtn" title="10-band equalizer">
+          <svg viewBox="0 0 24 24"><path d="M6 20V10M12 20V4M18 20V13"/><path d="M4 10h4M10 4h4M16 13h4"/></svg>
+          EQ
+        </button>
+        <button type="button" class="btn-glass" id="quietAllBtn"
+                title="Quiet Mode for every room: band-passed, quieter stream">
+          <svg viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 019.5 4a7 7 0 1010.5 10.5z"/></svg>
+          Quiet
+        </button>
+        <button type="button" class="btn-glass" id="muteAllBtn"
+                title="Mute every room (per-room mute is kept)">
+          <svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M16 9l5 6M21 9l-5 6"/></svg>
+          Mute all
         </button>
       </div>
       <div class="zones-controls" style="padding-bottom: 0;">
@@ -803,29 +848,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Volume / Source / Mute / Quiet row -->
-        <div class="zones-volume-row" style="margin-bottom: 20px; display: flex; gap: 10px; align-items: center; width: 100%;">
-          <!-- Source moved to the left -->
-          <select id="source-select" class="mode-select" aria-label="Audio source" style="flex: 0 0 auto;">
-            <option value="BT">BT</option>
-            <option value="AUX">AUX</option>
-            <option value="USB">USB</option>
-          </select>
-          
-          <span class="master-label" style="flex: 0 0 auto; margin-left: 10px;">Master <b id="volume-label">100%</b></span>
-          
-          <input type="range" id="volume" min="0" max="100" value="100" aria-label="Master volume" style="flex: 1 1 auto;">
-          
-          <!-- Quiet Mode icon (Moon) -->
-          <button type="button" class="icon-btn" id="btn-quiet" onclick="toggleQuietMode()" title="Quiet Mode (Frequency Limiting)" style="flex: 0 0 auto;">
-            <span id="quiet-icon">🌙</span>
-          </button>
-          
-          <!-- Mute button moved to the right -->
-          <button type="button" class="icon-btn" id="btn-mute" onclick="muteAllZones()" title="Mute all rooms" style="flex: 0 0 auto;">
-            <span id="mute-icon">&#128266;</span>
-          </button>
-        </div>
+
       </div>
       <div class="control-card" id="discoveredCard" style="display:none; margin: 0 30px 16px;">
         <div class="data-label" style="margin-bottom:8px;">Discovered nodes &mdash; drag into a room to assign (muted until then)</div>
@@ -879,131 +902,38 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ======================= TAB: ADVANCED ==================== -->
-    <div id="tab-advanced" class="tab-content">
-      <div class="sub-tab-bar">
-        <button type="button" class="sub-tab-btn active" data-subtab="adv-status" onclick="openSubTab('adv-status')">Status</button>
-        <button type="button" class="sub-tab-btn" data-subtab="adv-source" onclick="openSubTab('adv-source')">Source</button>
-        <button type="button" class="sub-tab-btn" data-subtab="adv-encoding" onclick="openSubTab('adv-encoding')">Encoding</button>
-      </div>
+    <!-- [source-is-a-menu-select] There is no Source tab: the input picker in
+         the menu is the whole feature. -->
 
-      <!-- ---- ADV > Status ---- -->
-      <div id="adv-status" class="sub-panel active">
-        <div class="stat-row" aria-label="System load">
-          <span class="stat-pill" id="stat-core0" title="Core 0 CPU load">C0-%</span>
-          <span class="stat-pill" id="stat-core1" title="Core 1 CPU load">C1-%</span>
-          <span class="stat-pill" id="stat-ram" title="Internal heap used (max = largest contiguous free block)">RAM-%</span>
-          <span class="stat-pill" id="stat-dma" title="DMA-capable free bytes" style="display:none">DMA-%</span>
-          <span class="stat-pill" id="stat-psram" title="PSRAM used" style="display:none">PS-%</span>
-        </div>
-
-        <!-- [servers-decide] Multi-server election card moved to TAB: ZONES -->
-        <h2 class="section-title" style="font-size:1rem;margin-bottom:10px;">Stream Telemetry</h2>
-        <div class="telemetry-bar">
-          <span class="tel-pill"><b id="stat-mode">--</b>mode</span>
-          <span class="tel-pill" title="Configured playback target sent to nodes"><b id="stat-buffer">--</b>target buffer</span>
-          <span class="tel-pill" title="Legacy field; not applied to playback"><b id="stat-delay">--</b>legacy adjustment</span>
-          <span class="tel-pill" title="Average of node-reported latency; not the configured target or measured playout timing"><b id="stat-latency">--</b>node latency</span>
-          <span class="tel-pill"><b id="stat-clients">--</b>clients</span>
-          <span class="tel-pill"><b id="stat-master">--</b>master</span>
-        </div>
-
-        <div class="log-controls" style="margin-top:6px;align-items:center;">
-          <button type="button" class="btn-glass" id="status-advanced-toggle">Show advanced</button>
-          <button type="button" class="btn-glass" id="analyzeBtn" title="Record up to 10 min — click Finish Now to end early">
-            ⏺ Analyze / Record (10 min max)
-          </button>
-          <span class="muted" id="status-advanced-state">basic view</span>
-        </div>
-
-        <div id="status-advanced-panel" style="display:none;">
-          <div class="grid-2" style="margin-top:16px;">
-            <div class="control-card" style="grid-column: span 2;">
-              <div class="data-label">Node Latencies</div>
-              <p style="font-size:0.85rem;color:var(--text-muted);margin-top:5px;" id="stat-nodes">Fetching…</p>
-            </div>
-            <div class="control-card" style="grid-column: span 2;">
-              <div class="data-label">Diagnostics</div>
-              <p style="font-size:0.85rem;color:var(--text-muted);margin-top:5px;" id="stat-diag">Fetching…</p>
-            </div>
-            <div class="control-card" style="grid-column: span 2;">
-              <div class="data-label">Audio Pipeline (last window)</div>
-              <p style="font-size:0.85rem;color:var(--text-muted);margin-top:5px;" id="stat-pipeline">Fetching…</p>
-            </div>
-          </div>
-          <div class="data-label" style="margin-top:18px;">Raw /api/stats JSON</div>
-          <pre id="status-raw-json" style="font-size:0.78rem;max-height:40vh;overflow:auto;background:rgba(0,0,0,0.35);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);white-space:pre-wrap;margin-top:8px;">(waiting for poll…)</pre>
-        </div>
-
-        <div class="log-controls">
-          <button type="button" class="btn-glass" id="status-log-pause">Pause</button>
-          <button type="button" class="btn-glass" id="status-log-clear">Clear</button>
-          <span class="muted" id="status-log-state">polling</span>
-        </div>
-
-        <div class="log-controls" style="margin-top:14px;align-items:center;">
-          <button type="button" class="btn-glass" id="status-advanced-log">Enable advanced logging</button>
-          <span class="muted" id="status-advanced-log-state">off (errors only)</span>
-        </div>
-
+    <!-- ======================= TAB: DLNA ======================= -->
+    <div id="tab-dlna" class="tab-content">
+      <h2 class="section-title" style="font-size:1.1rem;">DLNA</h2>
+      <div class="control-card">
+        <div class="data-label">Advertisement</div>
+        <p style="font-size:0.85rem;color:var(--text-muted);margin-top:6px;">
+          When DLNA is on, the server is advertised to phones and TVs on this network.
+        </p>
         <div class="log-controls" style="margin-top:14px;align-items:center;">
           <button type="button" class="btn-glass" id="status-dlna-toggle" disabled>DLNA: …</button>
           <span class="muted" id="status-dlna-state">loading</span>
         </div>
-
-        <div id="status-log-viewer" style="display:none;margin-top:14px;">
-          <div class="data-label">Serial Log (live)</div>
-          <pre id="status-log-pre" style="font-size:0.78rem;max-height:40vh;overflow:auto;background:rgba(0,0,0,0.35);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);white-space:pre-wrap;margin-top:8px;">(waiting for lines…)</pre>
-          <div class="log-controls" style="margin-top:8px;">
-            <button type="button" class="btn-glass" id="status-logview-clear">Clear</button>
-            <span class="muted" id="status-logview-state">idle</span>
-          </div>
-        </div>
       </div>
+    </div>
 
-      <!-- ---- ADV > Source ---- -->
-      <div id="adv-source" class="sub-panel">
-        <h2 class="section-title" style="font-size:1.1rem;">Source Board</h2>
-        <div class="grid-2">
-          <div class="control-card"><div class="data-label">Link</div><div class="data-value" id="src-link">--</div></div>
-          <div class="control-card"><div class="data-label">BT State</div><div class="data-value" id="src-bt">--</div></div>
-          <div class="control-card"><div class="data-label">Connected MAC</div><div class="data-value" id="src-mac" style="font-size:1rem;">--</div></div>
-          <div class="control-card"><div class="data-label">Volume (source-side)</div><div class="data-value" id="src-vol">--</div></div>
-          <div class="control-card" style="grid-column: span 2;">
-            <div class="data-label">Device List</div>
-            <p style="font-size:0.85rem;color:var(--text-muted);margin-top:5px;" id="src-devices">Fetching…</p>
-          </div>
-          <div class="control-card" style="grid-column: span 2;">
-            <div class="data-label">Diagnostics</div>
-            <p style="font-size:0.85rem;color:var(--text-muted);margin-top:5px;" id="src-diag">Fetching…</p>
-          </div>
-        </div>
 
-        <div id="src-kick-wrap" style="display:none;margin-top:16px;">
-          <button type="button" class="btn-glass" id="src-kick-btn"
-                  style="border-color:var(--danger);color:var(--danger);width:100%;padding:10px;">
-            Kick connected BT device (pair a new one)
-          </button>
-          <p class="muted" style="font-size:0.78rem;margin-top:8px;text-align:center;">
-            Temporarily disconnects the current device without unpairing. You have
-            ~2 minutes to pair a new device before the source attempts to reconnect.
-          </p>
-        </div>
+    <!-- ======================= TAB: ADVANCED ====================
+         [advanced-is-encoding] Status and Source were removed: the load pills
+         live in the header, node latency in Zones, logs behind Analyze, and
+         Source is its own page. Advanced is the encoder, laid out like the PC
+         server's Encoding page. -->
+    <div id="tab-advanced" class="tab-content">
 
-        <div class="log-controls" style="margin-top:20px;">
-          <button type="button" class="btn-glass" id="source-log-pause">Pause</button>
-          <button type="button" class="btn-glass" id="source-log-clear">Clear</button>
-          <span class="muted" id="source-log-state">polling</span>
-        </div>
-        <pre id="src-log" style="font-size:0.78rem;max-height:40vh;overflow:auto;background:rgba(0,0,0,0.35);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);white-space:pre-wrap;">Connecting to source board…</pre>
-      </div>
+      <div id="adv-encoding" class="sub-panel active">
+        <h2 class="section-title" style="font-size:1.1rem;">Encoding</h2>
 
-      <!-- ---- ADV > Encoding ---- -->
-      <div id="adv-encoding" class="sub-panel">
-        <h2 class="section-title" style="font-size:1.1rem;">Opus Encoder</h2>
-
+        <!-- [encoding-pc-layout] PC parity: full-width preset row, then a
+             two-column grid of settings cards. -->
         <div class="enc-card">
-          <h3>Playback Mode (Preset)</h3>
           <div class="enc-field" style="border-bottom: none; padding-bottom: 0;">
             <span class="enc-label">Mode</span>
             <select id="mode-select" class="mode-select" style="width: 140px;" aria-label="Playback mode">
@@ -1012,12 +942,14 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
               <option value="movie">Movie</option>
             </select>
           </div>
+
           <p class="enc-hint">
             Selecting a preset automatically adjusts the node's target latency, audio buffer, and encoder complexity. 
             (Use the 🌙 icon on the Zones tab for frequency limiting).
           </p>
         </div>
 
+        <div class="grid-2">
         <div class="enc-card">
           <h3>Target Quality</h3>
           <div class="enc-target-row">
@@ -1115,14 +1047,15 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
             is permanently discarded.
           </p>
         </div>
+        </div>
 
-<div class="enc-card">
-  <h3>Transport / Buffer</h3>
-  <div class="enc-field readonly"><span class="enc-label">Source Sample Rate</span><span class="enc-value" id="enc-source-rate">— Hz</span></div>
+                <div class="enc-card">
+          <h3>Transport / Buffer</h3>
+          <div class="enc-field readonly"><span class="enc-label">Source Sample Rate</span><span class="enc-value" id="enc-source-rate">— Hz</span></div>
           <div class="enc-field readonly"><span class="enc-label">Opus Sample Rate</span><span class="enc-value" id="enc-opus-rate">48,000 Hz</span></div>
           <div class="enc-field readonly"><span class="enc-label">Channels</span><span class="enc-value">2 (Stereo)</span></div>
           <div class="enc-field readonly"><span class="enc-label">Frame Duration</span><span class="enc-value">20 ms (960 samples)</span></div>
-<div class="enc-field readonly"><span class="enc-label">Max Packet</span><span class="enc-value">1024 bytes</span></div>
+          <div class="enc-field readonly"><span class="enc-label">Max Packet</span><span class="enc-value">1024 bytes</span></div>
           <div class="enc-field readonly"><span class="enc-label">Application Mode</span><span class="enc-value">Runtime (see above)</span></div>
         </div>
 
@@ -1340,9 +1273,12 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     var zonesKey      = '';
     var playersData   = [];
     var playersKey    = '';
-    var serversData   = [];
-    var serversKey    = '';
-    var activeDrags   = { volume: false, buffer: false };
+    // [node-latency-map] ip -> latencyMs from /api/stats; painted on the zone
+    // chips. Zones re-render only when /api/state changes, so a latency tick
+    // repaints the chips itself (see paintNodeLatency).
+    var nodeLatency   = {};
+    var dlnaEnabled   = null;
+    var activeDrags   = { buffer: false };
     var pendingDefaultSourceSave = null;
     var pendingModeSave = null;
     var pendingModeSaveTimer = null;
@@ -1359,18 +1295,14 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       if (panel) panel.classList.add('active');
       if (evt && evt.currentTarget) evt.currentTarget.classList.add('active');
 
-      if (tabId === 'tab-advanced') openSubTab(currentSubTab);
       if (tabId === 'tab-settings') loadNetworkState();
-      if (tabId === 'tab-zones')    refreshStatus();
+      if (tabId === 'tab-dlna')     loadDlnaState();
+      if (tabId === 'tab-zones')    { refreshStatus(); fetchHeavyStats(); }
 
       var showNetActions = (tabId === 'tab-settings');
       var saveB = $('net-save-btn'), revB = $('net-revert-btn');
       if (saveB) saveB.style.display = showNetActions ? '' : 'none';
       if (revB)  revB.style.display  = showNetActions ? '' : 'none';
-
-      // Hide phone floating volume when not on Zones
-      var vf = $('volumeFloat');
-      if (vf) vf.style.display = (tabId === 'tab-zones' && window.innerWidth <= 600) ? '' : 'none';
     };
 
     window.openSubTab = function (subtabId) {
@@ -1382,8 +1314,6 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       var btn = document.querySelector('.sub-tab-btn[data-subtab="' + subtabId + '"]');
       if (btn) btn.classList.add('active');
 
-      if (subtabId === 'adv-status')   fetchHeavyStats();
-      if (subtabId === 'adv-source')   fetchSourceInfo();
       if (subtabId === 'adv-encoding') loadEncoderSettings();
     };
 
@@ -1447,12 +1377,19 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       if (currentSubTab === 'adv-encoding') loadEncoderSettings();
     }
 
+    // [quiet-in-action-bar] Quiet and Mute-all are the PC's pill buttons in the
+    // Zones action bar now, so only the .active class changes state.
+    function paintQuietButton() {
+      var btn = $('quietAllBtn');
+      if (!btn) return;
+      btn.classList.toggle('active', isQuietMode);
+      btn.title = isQuietMode
+        ? 'Quiet Mode is on for every room \u2014 click to turn it off'
+        : 'Quiet Mode for every room: band-passed, quieter stream';
+    }
     async function toggleQuietMode() {
       isQuietMode = !isQuietMode;
-      var btn = $('btn-quiet'), icon = $('quiet-icon');
-      btn.classList.toggle('active', isQuietMode);
-      btn.classList.toggle('danger', isQuietMode);
-      icon.textContent = isQuietMode ? '🌕' : '🌙';
+      paintQuietButton();
       await api('/api/config', 'POST', { quietMode: isQuietMode });
     }
     window.toggleQuietMode = toggleQuietMode;
@@ -1467,18 +1404,26 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           await api('/api/config', 'POST', { defaultSource: currentSource });
         }, 6000);
       } else {
-        var el = $('source-select');
-        if (el) el.value = currentSource;
         toast('Source change not accepted', 'err');
       }
+      paintSourcePick();
     }
+
+    // [source-is-input-selector] The Source page is a single <select>. This
+    // keeps it showing what the server actually reports, so a change made
+    // from another phone (or a source-only OTA re-asserting BT) is visible
+    // here without a reload.
+    function paintSourcePick() {
+      var sel = $('source-select');
+      if (sel && currentSource && sel.value !== currentSource) sel.value = currentSource;
+    }
+    window.setSourcePick = function (src) { setSource(src); };
 
     function syncSourceFromState(s) {
       var src = (s && s.receiverAudio && s.receiverAudio.source) || '';
       if (src && src !== currentSource) {
         currentSource = src;
-        var el = $('source-select');
-        if (el && el.value !== src) el.value = src;
+        paintSourcePick();
       }
       var m = s && s.mode;
       if (!pendingModeSave && m && m !== playbackMode) {
@@ -1514,20 +1459,72 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     // Paints the bulk-mute button. Reflects EITHER server masterMuted
     // (OTA-driven) OR all-zones-muted, so the icon is honest in both states.
     function paintMuteAllButton() {
-      var btn = $('btn-mute'), icon = $('mute-icon');
-      if (!btn || !icon) return;
+      var btn = $('muteAllBtn');
+      if (!btn) return;
       var allZonesMuted = zonesData.length > 0 && zonesData.every(function(z){ return z.muted; });
       var effectiveMuted = isMuted || allZonesMuted;
       btn.classList.toggle('active', effectiveMuted);
-      btn.classList.toggle('danger', effectiveMuted);
-      if (effectiveMuted) {
-        btn.title = isMuted ? 'Muted (server/OTA)' : 'All rooms muted \u2014 click to unmute all';
-        icon.textContent = '\u{1F507}';
-      } else {
-        btn.title = 'Mute all rooms';
-        icon.textContent = '\u{1F50A}';
+      btn.title = effectiveMuted
+        ? (isMuted ? 'Muted (server/OTA)' : 'All rooms muted \u2014 click to unmute all')
+        : 'Mute every room (per-room mute is kept)';
+    }
+
+    // [node-latency-chip] Per-node latency lives on the node chip in Zones,
+    // fed by /api/stats (the same number the old Advanced > Status list
+    // showed). The chip is created by renderZones(); a stats tick only
+    // rewrites the text so dragging a node does not lose its handle.
+    function paintNodeLatency() {
+      function paint(el, ms) {
+        if (!el) return;
+        if (typeof ms === 'number' && ms >= 0) {
+          el.textContent = ms + ' ms';
+          el.classList.toggle('warn', ms >= 120);
+        } else {
+          el.textContent = '— ms';
+          el.classList.remove('warn');
+        }
+      }
+      var chips = document.querySelectorAll('.node-chip[data-ip]');
+      for (var i = 0; i < chips.length; i++) {
+        paint(chips[i].querySelector('.node-lat'),
+              nodeLatency[chips[i].getAttribute('data-ip')]);
+      }
+      // [zone-latency] A room shows the worst latency among its own nodes:
+      // the room is only as tight as its slowest speaker.
+      var badges = document.querySelectorAll('[data-zone-lat]');
+      for (var j = 0; j < badges.length; j++) {
+        var zid = badges[j].getAttribute('data-zone-lat');
+        var worst = null;
+        (zonesData || []).forEach(function(z){
+          if (z.id !== zid) return;
+          (z.nodes || []).forEach(function(n){
+            var ms = nodeLatency[n.ip];
+            if (typeof ms === 'number' && (worst === null || ms > worst)) worst = ms;
+          });
+        });
+        paint(badges[j], worst);
       }
     }
+    window.paintNodeLatency = paintNodeLatency;
+
+    // DLNA is a page of its own now; its state is pulled when it is opened
+    // and after every toggle.
+    async function loadDlnaState() {
+      var btn = $('status-dlna-toggle'), state = $('status-dlna-state');
+      if (!btn || !state) return;
+      var j = await api('/api/dlna', 'GET', null, { silent: true });
+      if (!j || !j.ok) { state.textContent = 'unavailable'; return; }
+      dlnaEnabled = !!j.enabled;
+      paintDlnaState();
+    }
+    function paintDlnaState() {
+      var btn = $('status-dlna-toggle'), state = $('status-dlna-state');
+      if (!btn || !state) return;
+      btn.disabled = false;
+      btn.textContent = dlnaEnabled ? 'Disable DLNA' : 'Enable DLNA';
+      state.textContent = dlnaEnabled ? 'on (visible to phones/TVs)' : 'off (not advertised)';
+    }
+    window.loadDlnaState = loadDlnaState;
 
     // ====================================================================
     //  Name modal
@@ -1580,9 +1577,16 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       // rendering would show undefined/garbage. Hold the panel on its
       // last good snapshot instead.
       if (s.ota) return;
-      var msFmt = function(v){ return (v||0) + ' <span style="font-size:0.8rem;color:var(--text-muted);">ms</span>'; };
-      updateText('stat-latency', (s.avgLatencyMs || 0).toFixed(1) + ' <span style="font-size:0.8rem;color:var(--text-muted);">ms</span>');
-      updateText('stat-buffer',  msFmt(s.audioBufferMs));
+      // [node-latency-map] Advanced > Status was removed. The only thing this
+      // poll now feeds is the per-node latency shown on the Zones chips; the
+      // rest of the payload stays available to the Analyze recording, which
+      // polls /api/stats itself.
+      var lat = {};
+      (s.nodes || []).forEach(function(n){
+        if (n && n.ip && typeof n.latencyMs === 'number') lat[n.ip] = n.latencyMs;
+      });
+      nodeLatency = lat;
+      paintNodeLatency();
       // [dynamic-source-rate] Populate the Transport section with the
       // measured I2S clock, not a hardcoded value. The field is on the
       // Advanced > Encoding panel, so it may not be in the DOM yet; the
@@ -1593,59 +1597,6 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           el.textContent = s.sourceSampleRate.toLocaleString() + ' Hz';
         }
       })();
-      updateText('stat-delay',   msFmt(s.latencyAdjustmentMs));
-      updateText('stat-mode',    s.mode || 'off');
-      updateText('stat-clients', s.wsClients);
-      updateText('stat-master', (s.masterVolume || 0) + '%' + (s.masterMuted ? ' <span style="color:var(--danger);">(muted)</span>' : ''));
-
-      var nodeHtml = '';
-      (s.nodes || []).forEach(function(n){
-        nodeHtml += '<div>' + n.ip + ' — reported latency ' + n.latencyMs + ' ms (queue ' + n.queueDepth + '/' + (n.target || '?') + ', rebuffers ' + n.rebuffers + ')</div>';
-      });
-      updateText('stat-nodes', nodeHtml || 'No nodes reporting yet');
-
-      var dropped = (s.streaming && s.streaming.opusDroppedLast5s) || 0;
-      var inHz = s.measuredInputHz || 0;
-      var inQuality;
-      if (inHz <= 0) inQuality = '—';
-      else {
-        // [incoming-rate-classification]
-        // Classify the measured source rate against the nearest standard
-        // audio rate, not against a hardcoded 48000. SOURCE_SAMPLE_RATE
-        // in EVDConfig.h is the server pipeline reference, not a claim
-        // about the source. A 44.1 kHz A2DP peer is nominal, not 8.8 %
-        // off. Also matches the server-side drift math, which now
-        // references the same standard table (see [drift-ref-is-actual-
-        // source-nominal] in EVDAudio.h).
-        var _stdRates = [8000, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000];
-        var _refHz = 48000;
-        for (var _i = 0; _i < _stdRates.length; _i++) {
-          if (Math.abs(inHz - _stdRates[_i]) / _stdRates[_i] < 0.01) { _refHz = _stdRates[_i]; break; }
-        }
-        var devPct = ((inHz - _refHz) / _refHz) * 100;
-        var devTag = Math.abs(devPct) < 0.05
-          ? ' <span style="color:var(--success);">✓ nominal</span>'
-          : ' <span style="color:var(--text-muted);">(' + (devPct >= 0 ? '+' : '') + devPct.toFixed(2) + ' %)</span>';
-        inQuality = inHz.toFixed(0) + ' Hz' + devTag;
-      }
-      updateText('stat-diag',
-        'I2S Read Errors: ' + s.i2sReadErrors + ' <br>' +
-        'Dropped Opus (5s): ' + dropped + ' <br>' +
-        'Avg Encode Time: ' + (s.avgEncodeUs || 0) + ' us <br>' +
-        'Clock drift: ' + s.clockDriftPpm + ' ppm <br>' +
-        'Incoming Quality: ' + inQuality + ' <br>' +
-        'Input path: ' + (s.serverInputSource || 'I2S') +
-        (s.serverInputSource === 'USB' ? ' (' + (((s.usbBytesLastWin||0)/1024).toFixed(1)) + ' KiB win)' : '') +
-        '<br>RSSI: ' + s.wifiRssi + 'dBm');
-      updateText('stat-pipeline',
-        'rawQueue:   ' + s.rawQueueDepth + ' / ' + s.rawQueueLen + ' <br>' +
-        'opusQueue:  ' + s.opusQueueDepth + ' / ' + s.opusQueueLen + ' <br>' +
-        'Opus encoded (win): ' + s.opusEncodedLastWin + ' <br>' +
-        'Opus dropped (win): ' + s.opusDroppedLastWin + ' <br>' +
-        'WS sent (win): ' + s.wsSentLastWin + '  ' + (((s.wsBytesLastWin||0)/1024).toFixed(1)) + ' KiB');
-
-      var rawEl = $('status-raw-json');
-      if (rawEl) rawEl.textContent = JSON.stringify(s, null, 2);
     }
 
     async function refreshStatus() {
@@ -1653,6 +1604,8 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       var s = await api('/api/state', 'GET', undefined, { silent: true });
       if (!s || !s.ok) return;
       setText('server-title-text', s.serverName || 'Enkelvoud');
+      paintSourcePick();
+      paintQuietButton();
 
       (function paintLoadPills(){
         // [pills-selector-fix] Removed the '#' prefix. $ is document.getElementById.
@@ -1731,15 +1684,6 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         }
       })();
 
-      if (!activeDrags.volume) {
-        var v = s.masterVolume;
-        var volD = $('volume'), volM = $('volume-mobile');
-        var lblD = $('volume-label'), lblM = $('volume-float-label');
-        if (volD && document.activeElement !== volD && volD.value !== String(v)) volD.value = v;
-        if (volM && document.activeElement !== volM && volM.value !== String(v)) volM.value = v;
-        if (lblD) lblD.textContent = v + '%';
-        if (lblM) lblM.textContent = v;
-      }
       if (!activeDrags.buffer) {
         var b = s.audioBufferMs;
         var bEl = $('buffer-latency'), bVal = $('buffer-latency-val');
@@ -1789,12 +1733,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       }
       if (s.quietMode !== undefined && s.quietMode !== isQuietMode) {
         isQuietMode = s.quietMode;
-        var btn = $('btn-quiet'), icon = $('quiet-icon');
-        if (btn && icon) {
-          btn.classList.toggle('active', isQuietMode);
-          btn.classList.toggle('danger', isQuietMode);
-          icon.textContent = isQuietMode ? '🌕' : '🌙';
-        }
+        paintQuietButton();
       }
       if (s.zones) {
         var k = JSON.stringify(s.zones);
@@ -1803,10 +1742,6 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       if (s.players) {
         var pk = JSON.stringify(s.players);
         if (pk !== playersKey) { playersKey = pk; playersData = s.players; renderDiscovered(); }
-      }
-      if (s.servers) {
-        var sk = JSON.stringify([s.role, s.leaderId, s.priority, s.servers]);
-        if (sk !== serversKey) { serversKey = sk; serversData = s.servers; renderServers(s); }
       }
       paintMuteAllButton();
       syncSourceFromState(s);
@@ -1829,6 +1764,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
                      'onbeforeinput="if (event.data && /[^A-Za-z0-9]/.test(event.data)) event.preventDefault()" ' +
                      'onchange="updateZoneName(\'' + zone.id + '\', this.value)" ' +
                      (zone.id === 'main' ? 'title="Main room cannot be deleted"' : '') + '>' +
+              '<span class="zone-lat" data-zone-lat="' + zone.id + '" title="Worst reported latency in this room">— ms</span>' +
               (zone.id !== 'main'
                 ? '<button type="button" class="btn-glass" style="padding:4px 8px;font-size:0.75rem;border-color:var(--danger);color:var(--danger);" onclick="deleteZone(\'' + zone.id + '\')">Del</button>'
                 : '') +
@@ -1876,9 +1812,15 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           '<div style="display:flex;align-items:center;gap:6px;flex:0 0 auto;">' +
             delHtml + unHtml + gearHtml +
           '</div>';
+        // [node-latency-chip] The node's own latency sits on its chip; the
+        // value comes from /api/stats (see paintNodeLatency).
+        var latVal = nodeLatency[node.ip];
+        var latTxt = (typeof latVal === 'number' && latVal >= 0) ? (latVal + ' ms') : '— ms';
+        var latWarn = (typeof latVal === 'number' && latVal >= 120) ? ' warn' : '';
         html +=
-          '<div class="' + chipClass + '" draggable="true" ondragstart="dragNode(event, \'' + node.ip + '\')">' +
+          '<div class="' + chipClass + '" data-ip="' + node.ip + '" draggable="true" ondragstart="dragNode(event, \'' + node.ip + '\')">' +
             '<div class="node-meta"><strong>' + displayName + verTag + '</strong><span class="node-ip">' + node.ip + '</span></div>' +
+            '<span class="node-lat' + latWarn + '" title="Reported latency to this node">' + latTxt + '</span>' +
             actionsHtml +
           '</div>';
       });
@@ -1915,96 +1857,10 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     }
 
     // ====================================================================
-    //  Servers (P3: servers decide) - role, priority, drag order
     // ====================================================================
-    function escHtml(v) {
-      return String(v == null ? '' : v).replace(/[&<>"]/g, function(c){
-        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
-      });
-    }
-    function renderServers(s) {
-      var listEl = $('serverList');
-      var roleEl = $('srv-role');
-      var leadEl = $('srv-leader');
-      if (!listEl) return;
-      var isLeader = (s.role === 'leader');
-      if (roleEl) {
-        roleEl.textContent = isLeader ? 'LEADER' : 'standby';
-        roleEl.className = 'stat-pill' + (isLeader ? ' ok' : '');
-      }
-      var leader = (serversData || []).find(function(x){ return x.id === s.leaderId; });
-      if (leadEl) {
-        leadEl.textContent = 'leader: ' + (leader ? (leader.self ? 'this server' : (leader.name || leader.id)) : '?');
-      }
-      var prioEl = $('srv-priority');
-      if (prioEl && document.activeElement !== prioEl) prioEl.value = s.priority;
-      var html = '';
-      (serversData || []).forEach(function(sv, idx){
-        var down = (sv.alive === false) && !sv.self;
-        var badge = (sv.id === s.leaderId)
-          ? '<span class="stat-pill ok">leader</span>'
-          : (down ? '<span class="stat-pill" style="opacity:.6">down</span>' : '');
-        html +=
-          '<div class="srv-row" draggable="true" data-id="' + escHtml(sv.id) + '"' +
-          ' ondragstart="srvDragStart(event)" ondragover="srvDragOver(event)"' +
-          ' ondragleave="srvDragLeave(event)" ondrop="srvDrop(event)" ondragend="srvDragEnd(event)"' +
-          ' style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);cursor:grab;' + (down ? 'opacity:.6;' : '') + '">' +
-            '<span class="muted" style="width:16px;text-align:right;">' + (idx + 1) + '</span>' +
-            '<strong>' + escHtml(sv.name || sv.id) + '</strong>' +
-            (sv.self ? '<span class="stat-pill" title="this server">this</span>' : '') +
-            '<span class="muted" style="font-size:.78rem;">' + escHtml(sv.ip) + ' &middot; prio ' + escHtml(sv.priority) + '</span>' +
-            badge +
-          '</div>';
-      });
-      listEl.innerHTML = html || '<p class="muted">no servers</p>';
-    }
-    var srvDragId = null;
-    window.srvDragStart = function(ev) {
-      srvDragId = ev.currentTarget.dataset.id;
-      ev.dataTransfer.effectAllowed = 'move';
-      ev.dataTransfer.setData('text/plain', srvDragId);
-    };
-    window.srvDragOver = function(ev) {
-      ev.preventDefault();
-      ev.currentTarget.style.borderColor = 'var(--accent-primary)';
-    };
-    window.srvDragLeave = function(ev) {
-      ev.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
-    };
-    window.srvDragEnd = function(ev) {
-      ev.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
-    };
-    window.srvDrop = function(ev) {
-      ev.preventDefault();
-      ev.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
-      var targetId = ev.currentTarget.dataset.id;
-      var srcId = srvDragId || ev.dataTransfer.getData('text/plain');
-      if (!srcId || srcId === targetId) return;
-      var order = (serversData || []).map(function(x){ return x.id; });
-      var from = order.indexOf(srcId), to = order.indexOf(targetId);
-      if (from < 0 || to < 0) return;
-      order.splice(from, 1);
-      order.splice(to, 0, srcId);
-      var st = $('srv-state');
-      if (st) st.textContent = 'applying…';
-      api('/api/servers/order', 'POST', { order: order }).then(function(r){
-        if (st) st.textContent = (r && r.ok) ? 'order applied' : 'apply failed';
-        refreshStatus();
-      });
-    };
-    window.applyPriority = function() {
-      var el = $('srv-priority');
-      if (!el) return;
-      var v = parseInt(el.value, 10);
-      if (!v || v < 1) return;
-      var st = $('srv-state');
-      if (st) st.textContent = 'applying…';
-      api('/api/servers/priority', 'POST', { priority: v }).then(function(r){
-        if (st) st.textContent = (r && r.ok) ? ('priority ' + r.priority) : 'failed';
-        refreshStatus();
-      });
-    };
-
+    //  (The Servers card -- role, drag order and the priority box -- was
+    //  removed from Zones on request. Election still runs server-side.)
+    // ====================================================================
     window.zoneVolLive = function(id, v) { var el = $('zv-' + id); if (el) el.textContent = v + '%'; };
     window.dragNode = function(ev, ip) { ev.dataTransfer.setData('text/plain', ip); };
     window.allowDrop = function(ev) { ev.preventDefault(); ev.currentTarget.classList.add('drag-over'); };
@@ -2189,38 +2045,6 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     };
 
     // ====================================================================
-    //  Source board
-    // ====================================================================
-    async function fetchSourceInfo() {
-      try {
-        var j = await api('/api/source/info', 'GET', undefined, { silent: true });
-        if (!j || !j.ok) { setText('src-link', 'no data'); return; }
-        setText('src-link', j.link ? 'UP' : 'DOWN');
-        setText('src-bt',   j.btConnected ? 'connected' : 'idle');
-        setText('src-mac',  j.connectedMac || '—');
-        setText('src-vol',  (j.volume | 0) + ' / 127');
-
-        var kickWrap = $('src-kick-wrap');
-        if (kickWrap) kickWrap.style.display = ((j.activeSource === 'BT') && (j.btConnected === true)) ? '' : 'none';
-
-        var dj = j.devices;
-        var devArr = Array.isArray(dj) ? dj : (dj && Array.isArray(dj.devices)) ? dj.devices : [];
-        var devs = devArr.map(function(d){ return d.mac + (d.conn ? ' *' : '') + ' (vol ' + d.vol + ')'; }).join('\n');
-        setText('src-devices', devs || 'no devices');
-        setText('src-diag',
-          'BT connecting: '   + (j.a2dpConnecting    | 0) + '\n' +
-          'BT connected: '    + (j.a2dpConnected     | 0) + '\n' +
-          'BT disconnected: ' + (j.a2dpDisconnected  | 0) + '\n' +
-          'AVRCP CT: '        + (j.avrcConnected ? 'yes' : 'no') + '\n' +
-          'Vol events: '      + (j.volumeEvents      | 0) + '\n' +
-          'UART lines: '      + (j.uartLines         | 0) + '\n' +
-          'Source: '          + (j.activeSource      || '?') + '\n' +
-          'Last heartbeat: '  + (j.heartbeatAgeMs === undefined ? '—' : ((j.heartbeatAgeMs / 1000).toFixed(1) + ' s ago')));
-        setText('src-log', (j.log || []).join('\n') || '(no log entries)');
-      } catch(e) { setText('src-link', 'unreachable'); }
-    }
-
-    // ====================================================================
     //  Log controllers
     // ====================================================================
     function makeLogController(opts) {
@@ -2259,134 +2083,48 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       }, 2000);
     }
 
+    // [node-latency-poll] /api/stats is polled for the per-node latency chips
+    // in Zones. Advanced > Status (which used to poll it) is gone.
     makeLogController({
-      pauseBtnId: 'status-log-pause',
-      clearBtnId: 'status-log-clear',
-      stateId:    'status-log-state',
       pollFn:     function(){ fetchHeavyStats(); },
-      tabId:      'tab-advanced',
-      subtabId:   'adv-status',
-      clearFn:    function(){
-        ['stat-latency','stat-buffer','stat-delay','stat-mode','stat-clients','stat-master','stat-nodes','stat-diag','stat-pipeline'].forEach(function(id){ setText(id, '—'); });
-      },
+      tabId:      'tab-zones',
+      clearFn:    function(){ nodeLatency = {}; paintNodeLatency(); },
       silenceLevels: [0, 1]
     });
 
-    makeLogController({
-      pauseBtnId: 'source-log-pause',
-      clearBtnId: 'source-log-clear',
-      stateId:    'source-log-state',
-      pollFn:     function(){ fetchSourceInfo(); },
-      tabId:      'tab-advanced',
-      subtabId:   'adv-source',
-      clearFn:    function(){ setText('src-log', '(cleared)'); },
-      silenceLevels: [0, 1]
-    });
+    // [source-is-a-menu-select] The Source page (and with it the telemetry, the
+    // log viewer and the "disconnect the phone" button) is gone: the input is
+    // picked straight from the menu, so there is nothing left to poll here.
 
-    // Kick BT device
+    // [logging-only-in-analyze] The "Enable advanced logging" button is gone:
+    // Analyze is now the one place that raises the log level, keeps the tail
+    // cursor and builds the report. This poller just keeps `lastLogSeq` warm
+    // so the recording starts from the newest line instead of replaying the
+    // ring, and it stays silent (no visible viewer).
+    var lastLogSeq = 0;
     (function(){
-      var btn = $('src-kick-btn');
-      if (!btn) return;
-      btn.addEventListener('click', async function(){
-        if (!confirm('Kick the connected BT device? You will have ~2 minutes to pair a new one.')) return;
-        var r = await api('/api/bt/kick', 'POST', {});
-        if (r && r.ok) {
-          var wrap = $('src-kick-wrap'); if (wrap) wrap.style.display = 'none';
-          setTimeout(function(){ fetchSourceInfo(); }, 500);
-        } else toast('Kick failed', 'err');
-      });
-    })();
-
-    // Advanced logging + live viewer
-    (function(){
-      var btn = $('status-advanced-log'), state = $('status-advanced-log-state');
-      var viewer = $('status-log-viewer'), pre = $('status-log-pre');
-      var viewState = $('status-logview-state'), clearBtn = $('status-logview-clear');
-      if (!btn || !state || !viewer || !pre) return;
-      var advanced = false, pollTimer = null, lastSeq = 0, lineCount = 0;
-      var MAX_LINES = 200;
-
-      function tagFor(level) { return level === 'E' ? '[ERROR]' : level === 'W' ? '[WARN ]' : '[INFO ]'; }
-      function appendLine(line) {
-        pre.textContent += tagFor(line.level) + ' ' + String(line.ms).padStart(8,' ') + ' ms | ' + line.text + '\n';
-        lineCount++;
-        if (lineCount > MAX_LINES) {
-          var lines = pre.textContent.split('\n');
-          pre.textContent = lines.slice(-MAX_LINES - 1).join('\n');
-          lineCount = MAX_LINES;
-        }
-        pre.scrollTop = pre.scrollHeight;
-      }
-      async function pollTail() {
-        // The recorder polls /api/log/tail?since= itself during the
-        // capture window. Skipping here avoids two in-flight tail
-        // requests racing each other for the lastSeq cursor, which
-        // would otherwise cause the recorder's nextSeq to leap forward
-        // and drop log lines out of the report.
-        if (recording) return;
+      async function pollTailQuiet() {
+        if (recording || document.hidden) return;
         try {
-          var r = await fetch('/api/log/tail?since=' + lastSeq, { cache: 'no-store' });
+          var r = await fetch('/api/log/tail?since=' + lastLogSeq, { cache: 'no-store' });
           var j = await r.json();
-          if (!j || !j.ok) return;
-          if (Array.isArray(j.lines)) {
-            for (var i = 0; i < j.lines.length; i++) appendLine(j.lines[i]);
-            if (j.lines.length) viewState.textContent = j.lines.length + ' new';
-          }
-          if (typeof j.nextSeq === 'number') lastSeq = j.nextSeq;
-        } catch(e){}
+          if (j && j.ok && typeof j.nextSeq === 'number') lastLogSeq = j.nextSeq;
+        } catch (e) {}
       }
-      if (clearBtn) clearBtn.addEventListener('click', function(){ pre.textContent = ''; lineCount = 0; viewState.textContent = 'idle'; });
-      btn.addEventListener('click', async function(){
-        advanced = !advanced;
-        btn.textContent = advanced ? 'Disable advanced logging (may affect audio)' : 'Enable advanced logging';
-        state.textContent = advanced ? 'verbose (level 3)' : 'off (errors only)';
-        try { await api('/api/log/level', 'POST', { level: advanced ? 3 : 1 }); } catch(e){}
-        if (advanced) {
-          viewer.style.display = ''; pre.textContent = ''; lineCount = 0; lastSeq = 0; viewState.textContent = 'polling';
-          await pollTail();
-          if (pollTimer) clearInterval(pollTimer);
-          pollTimer = setInterval(pollTail, 1000);
-        } else {
-          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-          viewer.style.display = 'none';
-        }
-      });
+      setInterval(pollTailQuiet, 3000);
     })();
 
-    // DLNA on/off
+    // DLNA on/off (its own page since the Status panel was removed)
     (function(){
       var btn = $('status-dlna-toggle'), state = $('status-dlna-state');
       if (!btn || !state) return;
-      var enabled = true;
-      function render() {
-        btn.textContent = enabled ? 'Disable DLNA' : 'Enable DLNA';
-        state.textContent = enabled ? 'on (visible to phones/TVs)' : 'off (not advertised)';
-      }
-      api('/api/dlna', 'GET', null, { silent: true }).then(function(j){
-        if (j && j.ok) { enabled = !!j.enabled; render(); btn.disabled = false; }
-        else state.textContent = 'unavailable';
-      });
       btn.addEventListener('click', async function(){
         btn.disabled = true;
-        var j = await api('/api/dlna', 'POST', { enabled: !enabled });
-        if (j && j.ok) { enabled = !!j.enabled; render(); }
-        else state.textContent = 'failed';
-        btn.disabled = false;
+        var j = await api('/api/dlna', 'POST', { enabled: !dlnaEnabled });
+        if (j && j.ok) { dlnaEnabled = !!j.enabled; paintDlnaState(); }
+        else { state.textContent = 'failed'; btn.disabled = false; }
       });
-    })();
-
-    // Basic / advanced toggle on Status
-    (function(){
-      var btn = $('status-advanced-toggle'), panel = $('status-advanced-panel'), state = $('status-advanced-state');
-      if (!btn || !panel) return;
-      var advanced = false;
-      btn.addEventListener('click', function(){
-        advanced = !advanced;
-        panel.style.display = advanced ? '' : 'none';
-        btn.textContent = advanced ? 'Hide advanced' : 'Show advanced';
-        if (state) state.textContent = advanced ? 'full detail' : 'basic view';
-        if (advanced) fetchHeavyStats();
-      });
+      loadDlnaState();
     })();
 
     // ====================================================================
@@ -3750,39 +3488,13 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     })();
 
     // ====================================================================
-    //  Volume slider bindings
-    // ====================================================================
-    (function(){
-      var volD = $('volume'), volM = $('volume-mobile');
-      var lblD = $('volume-label'), lblM = $('volume-float-label');
-      var volSaveTimer = null;
-      function paintVolume(v) {
-        if (volD && volD.value !== String(v)) volD.value = v;
-        if (volM && volM.value !== String(v)) volM.value = v;
-        if (lblD) lblD.textContent = v + '%';
-        if (lblM) lblM.textContent = v;
-      }
-      function onVolumeInput(v) {
-        activeDrags.volume = true;
-        paintVolume(v);
-        if (isMuted) { isMuted = false; paintMuteAllButton(); }
-        if (volSaveTimer) clearTimeout(volSaveTimer);
-        volSaveTimer = setTimeout(async function(){
-          activeDrags.volume = false;
-          await api('/api/config', 'POST', { masterVolume: parseInt(v, 10) });
-        }, 180);
-      }
-      if (volD) volD.addEventListener('input', function(){ onVolumeInput(volD.value); });
-      if (volM) volM.addEventListener('input', function(){ onVolumeInput(volM.value); });
-      paintVolume(100);
-    })();
-
-    // ====================================================================
     //  Mode + source select bindings
     // ====================================================================
     (function(){
       var modeSel = $('mode-select');
       if (modeSel) modeSel.addEventListener('change', function(){ setMode(modeSel.value); });
+      // [source-is-a-menu-select] The input picker in the menu is the only
+      // source control: picking BT / USB / AUX there switches the input.
       var srcSel = $('source-select');
       if (srcSel) srcSel.addEventListener('change', function(){ setSource(srcSel.value); });
     })();
@@ -3848,7 +3560,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     //  Touch swipe navigation
     // ====================================================================
     (function swipeNav() {
-      var TAB_ORDER = ['tab-zones', 'tab-settings', 'tab-advanced'];
+      var TAB_ORDER = ['tab-zones', 'tab-dlna', 'tab-settings', 'tab-advanced'];
       var SWIPE_MIN_X = 60, SWIPE_MAX_Y = 100, SWIPE_RATIO = 1.5, SWIPE_MAX_MS = 700, EDGE_GUARD = 24;
       var startX = 0, startY = 0, startT = 0, tracking = false;
 
