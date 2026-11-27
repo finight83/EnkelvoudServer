@@ -322,6 +322,12 @@ void setup() {
   pinMode(PIN_FACTORY_RESET, INPUT_PULLUP);
   pinMode(pinVolumePot, INPUT);
   loadWiFiSettings();
+  // [eq-persist] Equaliser settings live in their own NVS keys; load them
+  // right after the other persisted audio state so the first encoded frame
+  // already has the operator's curve. Coefficients are rebuilt on the audio
+  // task (gEq.dirty) once the Opus rate is known.
+  eqApiInit();
+  eqLoadFromNvs();
   loadZonesFromNVS();
 
   // [audio-buffer-per-mode] audioBufferMs is now part of the per-mode

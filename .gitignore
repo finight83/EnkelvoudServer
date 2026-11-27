@@ -4,3 +4,8 @@ build/
 # Python bytecode (gen_gz.py etc.).
 __pycache__/
 *.pyc
+
+# Scratch output of extracting the dashboard HTML out of EVDCTRL.h while
+# debugging. The dashboard source of truth is EVDCTRL.h (and the generated
+# EVDCTRL_GZ.h); this file is a by-product and must never be committed.
+_extracted.html

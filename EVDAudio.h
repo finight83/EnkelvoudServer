@@ -1291,6 +1291,11 @@ inline void audioProcessingTask(void *param) {
 
     // Emit ready frames. All pre-processing happens here, not on core 0.
     while (pendingCount >= g_opusFrameSamples) {
+      // [eq-before-quiet] Same order as the PC's mastering chain
+      // (EQ -> band-pass -> limiter): the equaliser shapes the master frame
+      // and quiet mode filters what the EQ produced. A disabled or flat EQ
+      // bypasses inside applyEqFilters(), so this costs nothing by default.
+      applyEqFilters(pendingBuf, g_opusFrameSamples);
       if (quietModeEnabled) {
         applyQuietFilter(pendingBuf, g_opusFrameSamples);
         applyQuietDynamics(pendingBuf, g_opusFrameSamples);

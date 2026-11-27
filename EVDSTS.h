@@ -86,6 +86,7 @@ inline void handleApiState(AsyncWebServerRequest *request) {
     stub += ",\"serverName\":\""; stub += jsonEscape(serverName); stub += "\"";
     stub += ",\"masterMuted\":"; stub += masterMuted ? "true" : "false";
     stub += ",\"quietMode\":";   stub += quietModeEnabled ? "true" : "false";
+    stub += ",\"eqEnabled\":";   stub += gEq.enabled ? "true" : "false";
     stub += ",\"masterVolume\":"; stub += String((int)masterVolume);
     stub += ",\"potVolume\":";    stub += String((int)potVolume);
     stub += ",\"audioBufferMs\":"; stub += String((int)audioBufferMs);
@@ -334,6 +335,10 @@ inline void handleApiState(AsyncWebServerRequest *request) {
   body += masterMuted ? "true" : "false";
   body += ",\"quietMode\":";
   body += quietModeEnabled ? "true" : "false";
+  // [eq-pill-truth] The dashboard's EQ pill follows this, so an equalizer
+  // switched on from the PC dashboard reads as on here as well.
+  body += ",\"eqEnabled\":";
+  body += gEq.enabled ? "true" : "false";
   body += ",\"cpuCore0Pct\":";
   body += String((int)cpu0Pct);
   body += ",\"cpuCore1Pct\":";

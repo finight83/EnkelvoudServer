@@ -1,7 +1,35 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.4.11"
+#define EVD_FW_VERSION "3.9.5.1"
+// 3.9.5.1: [eq-presets + phone action bar] The EQ panel gains a Preset
+//          dropdown - Custom, Flat, Pop, Rock, Jazz, Classical, EDM, Vocal -
+//          with the same eight curves on the PC dashboard. Picking one loads
+//          its curve; moving any band afterwards switches the selection to
+//          Custom and saves that as the custom curve. The selection and the
+//          custom curve persist in NVS (eq_preset, eq_c0..eq_c9) and travel
+//          in /api/audio/eq as "preset"/"custom". The zones action bar is now
+//          one row that never wraps: Add Room, EQ, Quiet and Mute all divide
+//          the width and shrink label, icon and padding with the viewport,
+//          so they line up side by side on a phone. PS% pill removed from the
+//          header (PSRAM is not part of the audio budget the operator acts
+//          on). Dashboard gzip 51714 bytes - if the serial log says
+//          otherwise, the board is still running the previous binary.
+// 3.9.5.0: [eq-10-band] A real 10-band peaking equalizer on the server, the
+//          same one the PC dashboard drives: EVDEq.h (RBJ peaking biquads,
+//          Q=1.4142, ISO octave bands 31.5 Hz..16 kHz, +/-12 dB, a band above
+//          0.9 x Nyquist skipped, flat or disabled = bit-exact bypass) runs
+//          in audioProcessingTask before quiet mode, GET/POST /api/audio/eq
+//          serve and persist it in the PC's JSON shape, and the dashboard's
+//          EQ pill opens the band panel. Quiet ON now turns the pill green
+//          and its label reads "Quiet ON". Dashboard gzip 49874 bytes.
+// 3.9.4.12: [zone-action-bar] EQ / Quiet / Mute all respond on a phone.
+//           EQ, Quiet and Mute all had no onclick= at all, so tapping them
+//           could only ever do nothing; the bar now binds all four pills in
+//           JS as well, presses show while the finger is down, and EQ says
+//           plainly that the equalizer is not implemented yet. Dashboard
+//           gzip is 47955 bytes - if the serial log says otherwise, the
+//           board is still running the previous binary.
 // 3.9.4.11: [dashboard-layout] Dashboard rework, visible on the first load
 //           after flashing: CPU/RAM/PS pills under the title, menu is
 //           Zones / Network / Source / DLNA / Update / Analyze, Source is the
@@ -261,6 +289,9 @@ static const char *SETTINGS_VERSION = "v2.0.7";
 
     EVDState.h      no deps; defines every shared global
     EVDHelpers.h    uses EVDState globals (mutexes, subscribers[], playerNodes)
+    EVDEq.h         no deps beyond EVDState (g_opusSampleRate); the 10-band
+                    peaking EQ applied to the master frame before Opus,
+                    ported from the PC's enkelvoud/eq.py
     EVDWiFi.h       uses EVDHelpers (PrefsGuard, jsonEscape); also owns
                     the per-mode encoder preset load/save to NVS
     EVDNTW.h        pulled in by EVDWiFi.h; defines EVDNTW_HTML_TEMPLATE
@@ -279,6 +310,8 @@ static const char *SETTINGS_VERSION = "v2.0.7";
                     EVDUsb (start/stop); defines handleApiConfig,
                     broadcastNodeConfig, updateNodePerf, handleNodeStats,
                     handleOtaResult
+    EVDEqApi.h      uses EVDEq + EVDHelpers (accumulateReqBody, PrefsGuard);
+                    serves GET/POST /api/audio/eq in the PC server's JSON shape
     EVDRoutes.h     uses EVDDLNA handlers + EVDOTA + EVDSTS + EVDCTRL_GZ;
                     calls server.begin()
     EVDMain.h       uses EVDRoutes (setup_http_server) + EVDDLNA (initDlna) +
@@ -646,6 +679,8 @@ inline void handleClockSyncRequests();
 // ============================================================================
 #include "EVDState.h"
 #include "EVDHelpers.h"
+#include "EVDEq.h"
+#include "EVDEqApi.h"
 #include "EVDWiFi.h"
 #include "EVDUDP.h"
 #include "EVDAudio.h"

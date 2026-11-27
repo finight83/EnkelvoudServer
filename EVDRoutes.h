@@ -396,6 +396,10 @@ inline void setup_http_server() {
   server.on("/api/audio/encoding",           HTTP_POST, rejectEmptyBodyPost, nullptr, handlePostAudioEncoding);
   server.on("/api/audio/encoding/revert",    HTTP_POST, handlePostAudioEncodingRevert);
   server.on("/api/audio/encoding/defaults",  HTTP_POST, handlePostAudioEncodingDefaults);
+  // [eq-api] 10-band equaliser, the same JSON shape as the PC server's
+  // /api/audio/eq so both dashboards drive the same equalizer.
+  server.on("/api/audio/eq",                 HTTP_GET,  handleApiEqGet);
+  server.on("/api/audio/eq",                 HTTP_POST, rejectEmptyBodyPost, nullptr, handleApiEqPost);
   server.on("/api/node_stats",      HTTP_POST, rejectEmptyBodyPost, nullptr, handleNodeStats);
   server.on("/api/player/ota_result", HTTP_POST, rejectEmptyBodyPost, nullptr, handleOtaResult);
   server.on("/api/source",          HTTP_POST, rejectEmptyBodyPost, nullptr, handleApiSourceBridge);

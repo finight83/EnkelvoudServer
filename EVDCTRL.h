@@ -135,10 +135,68 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .mode-select option { background:#111116; color:#f6f6f8; }
 
     /* [zone-action-bar] PC parity: pill buttons with inline icons. */
-    .zone-action-bar { display: flex; gap: 10px; align-items: center; margin: 2px 0 14px; flex-wrap: wrap; padding: 0 30px; }
+    .zone-action-bar { display: flex; gap: 10px; align-items: center; margin: 2px 0 14px; flex-wrap: nowrap; padding: 0 30px; }
     .zone-action-bar .btn-glass { display: inline-flex; align-items: center; gap: 8px; }
     .zone-action-bar .btn-glass.active { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.28); color: #fff; }
+    .zone-action-bar .btn-glass svg { flex: 0 0 auto; }
     .zone-action-bar .btn-glass svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    /* [press-state] Press feedback belongs to the pill that was pressed. The
+       old hover rule also fired on touch (the finger sits on the button for
+       the whole press), so a held EQ / Quiet / Mute all was left painted by
+       :hover and looked unresponsive. Press is its own state now, hover only
+       applies on devices that really hover, and touch-action stops the WebView
+       from turning a tap into a scroll gesture (which swallows the click). */
+    .zone-action-bar .btn-glass { touch-action: manipulation; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+    .zone-action-bar .btn-glass:active, .zone-action-bar .btn-glass.is-pressed { background: rgba(255,255,255,0.22); border-color: rgba(255,255,255,0.34); transform: scale(.97); }
+    @media (hover: hover) and (pointer: fine) {
+      .zone-action-bar .btn-glass:hover { background: rgba(255,255,255,0.12); }
+    }
+    /* [active-pill] A pill that is ON must be obvious at arm's length: Quiet
+       Mode and an enabled equalizer turn green with a glow, not a faint grey
+       tint. Placed after the :active/.is-pressed rules so a press on an
+       already-on pill still reads as a press. */
+    .zone-action-bar .btn-glass.active {
+      background: rgba(16,185,129,0.22);
+      border-color: rgba(16,185,129,0.75);
+      color: #7cf2c2;
+      box-shadow: 0 0 0 1px rgba(16,185,129,0.35) inset, 0 0 12px rgba(16,185,129,0.35);
+      font-weight: 650;
+    }
+    .zone-action-bar .btn-glass.active svg { stroke: #7cf2c2; }
+    /* Equalizer panel: the band sliders need a visible thumb on a phone. */
+    .eq-slider { -webkit-appearance: none; appearance: none; background: transparent; }
+    .eq-slider::-webkit-slider-runnable-track { width: 6px; background: rgba(255,255,255,0.18); border-radius: 3px; }
+    .eq-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #8e2de2; border: 2px solid #fff; margin-left: -7px; }
+    .eq-slider::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: #8e2de2; border: 2px solid #fff; }
+    #eqToggleBtn.active { background: rgba(16,185,129,0.22); border-color: rgba(16,185,129,0.75); color: #7cf2c2; }
+    /* [pill-row-fits-phone] One row, never a wrapped second line: the four
+       pills divide the bar evenly and shrink their padding, icon and label
+       with the viewport. Below 420 px the label font drops far enough that
+       "Add Room" and "Mute all" still fit next to each other, which is what
+       the wrapped row looked like it was trying to do before. */
+    .zone-action-bar .btn-glass {
+      flex: 1 1 0;
+      min-width: 0;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 10px;
+      font-size: clamp(.6rem, 3.1vw, .85rem);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .zone-action-bar .btn-glass .pill-label { overflow: hidden; text-overflow: ellipsis; }
+    @media (max-width: 420px) {
+      .zone-action-bar { gap: 6px; padding: 0 12px; }
+      .zone-action-bar .btn-glass { gap: 4px; padding: 7px 6px; }
+      .zone-action-bar .btn-glass svg { width: 14px; height: 14px; }
+    }
+    /* EQ preset selector, shared vocabulary with the PC dashboard. */
+    #eqPresetSelect {
+      background: rgba(0,0,0,0.35); border: 1px solid var(--hair);
+      border-radius: 10px; color: var(--text-main);
+      padding: 7px 10px; font: inherit; font-size: .8rem; min-height: 34px;
+    }
+    #eqPresetSelect:focus { outline: none; border-color: var(--accent-primary); }
     /* [source-is-input-selector] BT / USB / AUX pills, PC pill styling. */
     .zone-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
     .zone-toolbar .section-title { margin: 0; }
@@ -765,7 +823,9 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
             <span class="stat-pill" id="stat-core1" title="Core 1 CPU load">C1-%</span>
             <span class="stat-pill" id="stat-ram" title="Internal heap used (max = largest contiguous free block)">RAM-%</span>
             <span class="stat-pill" id="stat-dma" title="DMA-capable free bytes" style="display:none">DMA-%</span>
-            <span class="stat-pill" id="stat-psram" title="PSRAM used" style="display:none">PS-%</span>
+            <!-- [no-ps-pill] PS% removed: PSRAM is not part of the audio or heap
+                 budget the operator acts on, and it cost a slot the C0/C1/RAM/
+                 DMA pills need on a phone. -->
           </div>
         </div>
 
@@ -818,25 +878,31 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     <!-- ======================= TAB: ZONES ======================= -->
     <div id="tab-zones" class="tab-content active">
       <!-- [zone-action-bar] Same bar as the PC server: Add Room, EQ, Quiet and
-           Mute all, all .btn-glass pills with 17 px icons. -->
+           Mute all, on one row that scales down instead of wrapping. The four
+           pills share the width (flex 1 1 0 with a min-width), their labels
+           shrink with clamp(), and the icons step down on a phone, so all four
+           always sit next to each other. -->
       <div class="zone-action-bar">
-        <button type="button" class="btn-glass" onclick="createNewZone()">
+        <button type="button" class="btn-glass" onclick="createNewZone()" title="Add a room">
           <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-          Add Room
+          <span class="pill-label">Add Room</span>
         </button>
-        <button type="button" class="btn-glass" id="eqBtn" title="10-band equalizer">
+        <button type="button" class="btn-glass" id="eqBtn"
+                onclick="openEqPanel()" title="10-band equalizer">
           <svg viewBox="0 0 24 24"><path d="M6 20V10M12 20V4M18 20V13"/><path d="M4 10h4M10 4h4M16 13h4"/></svg>
-          EQ
+          <span class="pill-label">EQ</span>
         </button>
         <button type="button" class="btn-glass" id="quietAllBtn"
+                onclick="toggleQuietMode()" aria-pressed="false"
                 title="Quiet Mode for every room: band-passed, quieter stream">
           <svg viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 019.5 4a7 7 0 1010.5 10.5z"/></svg>
-          Quiet
+          <span class="pill-label">Quiet</span>
         </button>
         <button type="button" class="btn-glass" id="muteAllBtn"
+                onclick="muteAllZones()"
                 title="Mute every room (per-room mute is kept)">
           <svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M16 9l5 6M21 9l-5 6"/></svg>
-          Mute all
+          <span class="pill-label">Mute all</span>
         </button>
       </div>
       <div class="zones-controls" style="padding-bottom: 0;">
@@ -1218,6 +1284,46 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ===================== Equalizer (10-band, server-side) =============== -->
+  <!-- [eq-modal] Same bands, range and endpoint as the PC dashboard's EQ:
+       /api/audio/eq carries {"enabled","gains"[10],"bands"[10]}. -->
+  <div id="eqModal" class="ota-modal" aria-hidden="true">
+    <div class="ota-modal-backdrop" onclick="closeEqModal()"></div>
+    <div class="ota-modal-panel" role="dialog" aria-modal="true" aria-label="Equalizer" style="max-width:640px;">
+      <div class="ota-modal-header">
+        <strong style="font-size:1rem;">10-band Equalizer</strong>
+        <button type="button" class="ota-close" onclick="closeEqModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="ota-modal-body">
+        <div class="log-controls" style="align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap;">
+          <button type="button" class="btn-glass" id="eqToggleBtn">Equalizer: Off</button>
+          <!-- [eq-presets] Same eight names on the PC dashboard. Picking one
+               loads its curve; touching any band afterwards turns the
+               selection into "Custom" and saves that as the custom curve. -->
+          <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--text-muted);">
+            Preset
+            <select id="eqPresetSelect" aria-label="Equalizer preset curve">
+              <option value="custom">Custom</option>
+              <option value="flat">Flat</option>
+              <option value="pop">Pop</option>
+              <option value="rock">Rock</option>
+              <option value="jazz">Jazz</option>
+              <option value="classical">Classical</option>
+              <option value="edm">EDM</option>
+              <option value="vocal">Vocal</option>
+            </select>
+          </label>
+          <button type="button" class="btn-glass" id="eqFlatBtn" style="padding:4px 10px;font-size:.75rem;">Flat</button>
+          <span class="muted" id="eqStatus" style="font-size:.78rem;"></span>
+        </div>
+        <div id="eqBands" style="display:flex;gap:8px;justify-content:space-between;overflow-x:auto;padding:8px 0;"></div>
+      </div>
+      <div class="ota-modal-footer">
+        <button type="button" class="btn-primary" onclick="closeEqModal()">Done</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" role="status" aria-live="polite"></div>
 
   <script>
@@ -1378,21 +1484,221 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     }
 
     // [quiet-in-action-bar] Quiet and Mute-all are the PC's pill buttons in the
-    // Zones action bar now, so only the .active class changes state.
+    // Zones action bar now. Quiet ON is unmistakable: the pill turns green and
+    // its label says so, not just a faint grey tint. The label is swapped in
+    // place (the SVG stays), so the icon does not disappear with it.
     function paintQuietButton() {
       var btn = $('quietAllBtn');
       if (!btn) return;
-      btn.classList.toggle('active', isQuietMode);
+      btn.classList.toggle('active', !!isQuietMode);
+      var lbl = btn.querySelector('.pill-label');
+      if (lbl) lbl.textContent = isQuietMode ? 'Quiet ON' : 'Quiet';
+      btn.setAttribute('aria-pressed', isQuietMode ? 'true' : 'false');
       btn.title = isQuietMode
-        ? 'Quiet Mode is on for every room \u2014 click to turn it off'
+        ? 'Quiet Mode is ON for every room \u2014 tap to turn it off'
         : 'Quiet Mode for every room: band-passed, quieter stream';
     }
+    // [quiet-actual-state] Optimistic paint first (the button answers the
+    // tap immediately), then the server's own quietMode wins: if the POST
+    // was refused, or another client changed it, the button snaps back to
+    // the truth instead of lying.
     async function toggleQuietMode() {
-      isQuietMode = !isQuietMode;
+      var want = !isQuietMode;
+      isQuietMode = want;
       paintQuietButton();
-      await api('/api/config', 'POST', { quietMode: isQuietMode });
+      var r = await api('/api/config', 'POST', { quietMode: want });
+      if (!r || !r.ok) {
+        isQuietMode = !want;
+        paintQuietButton();
+        toast('Quiet Mode not accepted by server', 'err');
+      }
     }
     window.toggleQuietMode = toggleQuietMode;
+
+    // [eq-panel] The 10-band equaliser lives on the server (EVDEq.h) and is
+    // reached through /api/audio/eq, the same JSON the PC dashboard uses.
+    // Gains are dB per ISO octave band; the server skips a band above its
+    // Nyquist, so 16k does nothing at a 24 kHz Opus rate.
+    //
+    // [eq-presets] The eight curves below are byte-identical to the PC
+    // dashboard's EQ_PRESETS (EnkelvoudPC/web/dashboard.html) so a curve
+    // picked on one dashboard means the same thing on the other. "Custom" is
+    // not a curve: it is whatever the user last dialled in by hand, and any
+    // band move while a named preset is selected switches the dropdown to
+    // Custom and saves the result as the custom curve.
+    var EQ_PRESETS = {
+      flat:      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      pop:       [-1, 2, 4, 5, 3, 0, -1, -1, 1, 2],
+      rock:      [5, 4, 3, 1, -1, -2, -1, 1, 3, 4],
+      jazz:      [3, 2, 1, 2, -1, -1, 0, 1, 2, 3],
+      classical: [4, 3, 2, 1, -1, -1, 0, 2, 3, 4],
+      edm:       [6, 5, 2, 0, -2, 2, 1, 2, 5, 4],
+      vocal:     [-3, -2, -1, 1, 4, 5, 4, 2, -1, -2]
+    };
+    var EQ_PRESET_LABELS = { flat: 'Flat', pop: 'Pop', rock: 'Rock',
+                             jazz: 'Jazz', classical: 'Classical',
+                             edm: 'EDM', vocal: 'Vocal', custom: 'Custom' };
+
+    var eqState = { enabled: false, gains: [], bands: [], preset: 'custom',
+                    custom: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
+    var eqSendTimer = null;
+    var eqLoaded = false;
+
+    function eqCurve(name) {
+      if (name === 'custom') return (eqState.custom || []).slice();
+      var c = EQ_PRESETS[name];
+      return c ? c.slice() : null;
+    }
+    function eqPaintPreset() {
+      var sel = $('eqPresetSelect');
+      if (sel && sel.value !== eqState.preset) sel.value = eqState.preset;
+    }
+    function eqPresetNameFromCurve(gains) {
+      // Exact match against a named curve, else this is a custom curve.
+      var keys = Object.keys(EQ_PRESETS);
+      for (var i = 0; i < keys.length; i++) {
+        var p = EQ_PRESETS[keys[i]], same = true;
+        for (var b = 0; b < 10; b++) {
+          if (Math.abs((gains[b] || 0) - p[b]) > 0.01) { same = false; break; }
+        }
+        if (same) return keys[i];
+      }
+      return 'custom';
+    }
+
+    function eqLabel(hz) {
+      return hz >= 1000 ? (hz / 1000) + 'k' : String(hz);
+    }
+    function eqFormatDb(v) {
+      return (v > 0 ? '+' : '') + (Number(v) || 0).toFixed(1) + ' dB';
+    }
+    function eqPaintToggle() {
+      var b = $('eqToggleBtn');
+      if (b) {
+        b.textContent = 'Equalizer: ' + (eqState.enabled ? 'On' : 'Off');
+        b.classList.toggle('active', !!eqState.enabled);
+      }
+      var pill = $('eqBtn');
+      if (pill) pill.classList.toggle('active', !!eqState.enabled);
+    }
+    function eqRender() {
+      var wrap = $('eqBands');
+      if (!wrap) return;
+      var html = '';
+      eqState.bands.forEach(function(hz, i){
+        var g = eqState.gains[i] || 0;
+        html +=
+          '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;min-width:46px;">' +
+            '<span class="muted" id="eq-val-' + i + '" style="font-size:.7rem;font-variant-numeric:tabular-nums;">' + eqFormatDb(g) + '</span>' +
+            '<input type="range" class="eq-slider" data-band="' + i + '" min="-12" max="12" step="0.5" value="' + g + '"' +
+              ' style="writing-mode:vertical-lr;direction:rtl;width:24px;height:150px;accent-color:#8e2de2;"' +
+              ' aria-label="' + hz + ' Hz band">' +
+            '<span class="muted" style="font-size:.7rem;">' + eqLabel(hz) + '</span>' +
+          '</div>';
+      });
+      wrap.innerHTML = html;
+      Array.prototype.forEach.call(wrap.querySelectorAll('.eq-slider'), function(el){
+        el.addEventListener('input', function(){
+          var i = parseInt(el.getAttribute('data-band'), 10);
+          eqState.gains[i] = parseFloat(el.value);
+          var lab = $('eq-val-' + i);
+          if (lab) lab.textContent = eqFormatDb(eqState.gains[i]);
+          // [preset-becomes-custom] Moving a band while a named curve is
+          // selected turns the selection into Custom and saves the hand-made
+          // curve as the custom one, which is what the operator just built.
+          if (eqState.preset !== 'custom') {
+            eqState.preset = 'custom';
+            eqState.custom = eqState.gains.slice();
+            eqPaintPreset();
+          } else {
+            eqState.custom = eqState.gains.slice();
+          }
+          eqScheduleSend();
+        });
+      });
+      eqPaintToggle();
+    }
+    function eqScheduleSend() {
+      if (eqSendTimer) clearTimeout(eqSendTimer);
+      eqSendTimer = setTimeout(async function() {
+        eqSendTimer = null;
+        var body = { gains: eqState.gains, preset: eqState.preset };
+        if (eqState.preset === 'custom') body.custom = eqState.custom;
+        var r = await api('/api/audio/eq', 'POST', body);
+        var st = $('eqStatus');
+        if (st) st.textContent = (r && r.ok) ? 'applied' : 'not applied';
+      }, 200);
+    }
+    // [eq-preset-apply] Picking a curve from the dropdown replaces all ten
+    // gains and persists both the curve and the selection.
+    async function eqApplyPreset(name) {
+      var curve = eqCurve(name);
+      if (!curve) return;
+      eqState.preset = name;
+      eqState.gains = curve.slice();
+      if (name === 'custom') eqState.custom = curve.slice();
+      eqRender();
+      eqPaintPreset();
+      var st = $('eqStatus');
+      if (st) st.textContent = 'applying\u2026';
+      var body = { gains: eqState.gains, preset: eqState.preset };
+      if (eqState.preset === 'custom') body.custom = eqState.custom;
+      var r = await api('/api/audio/eq', 'POST', body);
+      if (st) st.textContent = (r && r.ok) ? (EQ_PRESET_LABELS[name] || name) + ' applied' : 'not applied';
+    }
+    async function eqLoad() {
+      var r = await api('/api/audio/eq', 'GET', undefined, { silent: true });
+      if (!r || !r.ok) return false;
+      eqState.enabled = !!r.enabled;
+      eqState.gains = (r.gains || []).slice();
+      eqState.bands = (r.bands || []).slice();
+      // Older firmware sends no preset/custom: derive them from the curve so
+      // the dropdown is never blank or wrong.
+      eqState.preset = (r.preset && (r.preset === 'custom' || EQ_PRESETS[r.preset]))
+        ? r.preset : eqPresetNameFromCurve(eqState.gains);
+      eqState.custom = (r.custom && r.custom.length === 10)
+        ? r.custom.slice()
+        : (eqState.preset === 'custom' ? eqState.gains.slice() : eqState.custom);
+      eqLoaded = true;
+      eqRender();
+      eqPaintPreset();
+      return true;
+    }
+    window.openEqPanel = async function() {
+      var m = $('eqModal');
+      if (!m) return;
+      m.classList.add('open');
+      m.setAttribute('aria-hidden', 'false');
+      var st = $('eqStatus');
+      if (st) st.textContent = 'loading\u2026';
+      var ok = await eqLoad();
+      if (st) st.textContent = ok ? '' : 'equalizer unavailable on this server';
+    };
+    window.closeEqModal = function() {
+      var m = $('eqModal');
+      if (!m) return;
+      m.classList.remove('open');
+      m.setAttribute('aria-hidden', 'true');
+    };
+    (function eqBind() {
+      var toggle = $('eqToggleBtn');
+      if (toggle) toggle.addEventListener('click', async function(){
+        eqState.enabled = !eqState.enabled;
+        eqPaintToggle();
+        var r = await api('/api/audio/eq', 'POST', { enabled: eqState.enabled });
+        if (!r || !r.ok) { eqState.enabled = !eqState.enabled; eqPaintToggle(); }
+      });
+      var flat = $('eqFlatBtn');
+      if (flat) flat.addEventListener('click', function(){
+        eqApplyPreset('flat');
+      });
+      var presetSel = $('eqPresetSelect');
+      if (presetSel) presetSel.addEventListener('change', function(){
+        eqApplyPreset(presetSel.value);
+      });
+      // Paint the EQ pill's state on load without opening the panel.
+      eqLoad();
+    })();
 
     async function setSource(src) {
       var r = await api('/api/source', 'POST', { source: src });
@@ -1609,7 +1915,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
       (function paintLoadPills(){
         // [pills-selector-fix] Removed the '#' prefix. $ is document.getElementById.
-        var c0 = $('stat-core0'), c1 = $('stat-core1'), rm = $('stat-ram'), dm = $('stat-dma'), ps = $('stat-psram');
+        var c0 = $('stat-core0'), c1 = $('stat-core1'), rm = $('stat-ram'), dm = $('stat-dma'), ps = null;   // [no-ps-pill] PS% removed
         
         function setPill(el, text, pct, extraClass) {
           if (!el) return;
@@ -1745,6 +2051,12 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       }
       paintMuteAllButton();
       syncSourceFromState(s);
+      // [eq-pill-truth] Another client may have switched the equalizer on or
+      // off; the EQ pill's state is only re-pulled when it disagrees.
+      if (eqLoaded && eqState.enabled !== !!(s.eqEnabled)) {
+        eqState.enabled = !!s.eqEnabled;
+        eqPaintToggle();
+      }
     }
 
     // ====================================================================
@@ -3539,6 +3851,94 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     })();
 
     // ====================================================================
+    //  Zones action bar: bind the pills directly
+    // ====================================================================
+    // They also carry onclick= in the markup; the attribute covers the case
+    // where this block is the thing that is missing, and window[fn] guards
+    // the case where the handler is.
+    (function(){
+      var map = { quietAllBtn: 'toggleQuietMode', muteAllBtn: 'muteAllZones', eqBtn: 'openEqPanel' };
+      Object.keys(map).forEach(function(id){
+        var el = $(id), fn = window[map[id]];
+        if (!el || typeof fn !== 'function') return;
+        el.addEventListener('click', function(){ fn(); });
+      });
+    })();
+
+    // ====================================================================
+    //  [pill-tap-fallback] Zones action bar (Add Room / EQ / Quiet / Mute all)
+    //  ====================================================================
+    //  On the phones this dashboard is used from, a tap on one of those pills
+    //  did nothing: the press was delivered, the finger was held down and the
+    //  button never activated. A document-level touchend here decides what a
+    //  tap is, independently of how the WebView turns touch into a click.
+    //
+    //  - the pill under the finger is found from the touch point, not from
+    //    the event target (a tap that started slightly off still lands);
+    //  - movement > 12 px, more than 800 ms held, or a second finger cancels
+    //    it, so scrolling and the swipe navigation still work;
+    //  - when the WebView does deliver the click, the handler below is
+    //    cancelled by the click and the tap runs once, not twice.
+    (function pillTapFallback() {
+      var TAP_MAX_MOVE = 12, TAP_MAX_MS = 800;
+      var pending = null;   // {el, x, y, t, timer}
+
+      function pillAt(x, y) {
+        var el = document.elementFromPoint(x, y);
+        while (el && el !== document.body) {
+          if (el.classList && el.classList.contains('zone-action-bar') && el.classList.contains('btn-glass')) return el;
+          el = el.parentElement;
+        }
+        return null;
+      }
+      function clearPending() {
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        if (pending.el) pending.el.classList.remove('is-pressed');
+        pending = null;
+      }
+      function fire(el) {
+        setTimeout(function(){ el.classList.remove('is-pressed'); }, 160);
+        if (typeof el.click === 'function') el.click();
+      }
+
+      document.addEventListener('touchstart', function(e){
+        clearPending();
+        if (!e.touches || e.touches.length !== 1) return;
+        var t = e.touches[0];
+        var el = pillAt(t.clientX, t.clientY);
+        if (!el) return;
+        // The press must be visible while the finger is still down; on the
+        // phones this runs on, :active is not reliably painted at all.
+        el.classList.add('is-pressed');
+        pending = {
+          el: el, x: t.clientX, y: t.clientY, t: Date.now(),
+          timer: setTimeout(clearPending, TAP_MAX_MS + 200)
+        };
+      }, { passive: true });
+
+      document.addEventListener('touchmove', function(e){
+        if (!pending || !e.touches || !e.touches.length) return;
+        var t = e.touches[0];
+        if (Math.abs(t.clientX - pending.x) > TAP_MAX_MOVE ||
+            Math.abs(t.clientY - pending.y) > TAP_MAX_MOVE) clearPending();
+      }, { passive: true });
+
+      document.addEventListener('touchend', function(e){
+        var p = pending;
+        clearPending();
+        if (!p) return;
+        if (Date.now() - p.t > TAP_MAX_MS) return;
+        // A synthetic click from the same tap may still arrive; let it do the
+        // work and stay out of the way if it does.
+        p.el.addEventListener('click', function(){ clearTimeout(p.timer); }, { once: true });
+        p.timer = setTimeout(function(){ fire(p.el); }, 350);
+      }, { passive: true });
+
+      document.addEventListener('touchcancel', clearPending, { passive: true });
+    })();
+
+    // ====================================================================
     //  Firmware fetch + polling
     // ====================================================================
     fetch('/api/fw').then(function(r){ return r.json(); }).then(function(d){
@@ -3572,7 +3972,7 @@ static const char EVDCTRL_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
             if (el.classList.contains('slider') || el.classList.contains('node-chip') || el.classList.contains('nav-btn') ||
                 el.classList.contains('menu-bar') || el.classList.contains('sub-tab-bar') || el.classList.contains('overlay') ||
                 el.classList.contains('modal') || el.classList.contains('ota-modal') || el.classList.contains('ota-modal-panel') ||
-                el.classList.contains('rec-overlay')) return true;
+                el.classList.contains('rec-overlay') || el.classList.contains('zone-action-bar')) return true;
           }
           if (el.getAttribute && el.getAttribute('draggable') === 'true') return true;
           el = el.parentElement;
