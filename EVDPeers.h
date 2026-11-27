@@ -139,7 +139,7 @@ inline void peerBroadcastTargets(IPAddress out[2], int &n) {
 }
 
 inline void peerSendBeacon() {
-  StaticJsonDocument<1024> doc;
+  DynamicJsonDocument doc(2048);
   doc["e"]        = PEER_PROTOCOL;
   doc["id"]       = g_selfPeerId;
   doc["name"]     = serverName;
@@ -164,7 +164,7 @@ inline void peerSendBeacon() {
     }
   }
 
-  char buf[1024];
+  char buf[1536];
   size_t n = serializeJson(doc, buf, sizeof(buf));
   if (n == 0) return;
 
@@ -179,13 +179,17 @@ inline void peerSendBeacon() {
 }
 
 inline void peerHandlePacket(int sz) {
-  char buf[384];
+  // [node-sharing] The beacon now carries a fleet list (up to 16 nodes), so
+  // the old 384 B buffer / 320 B JSON doc truncated a leader's beacon and the
+  // whole peer was silently dropped. Keep the buffer on the stack but parse
+  // into a heap document.
+  char buf[1536];
   int n = peerUdp.read(buf, sizeof(buf) - 1);
   if (n <= 0) return;
   buf[n] = '\0';
   if (n < sz) { /* short read: still parsable */ }
 
-  StaticJsonDocument<320> doc;
+  DynamicJsonDocument doc(2048);
   if (deserializeJson(doc, buf) != DeserializationError::Ok) return;
   const char *e = doc["e"] | "";
   if (strcmp(e, PEER_PROTOCOL) != 0) return;

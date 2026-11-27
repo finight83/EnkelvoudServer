@@ -1343,6 +1343,47 @@ inline void audioEncodeTask(void *param) {
   // overflow boot-loop only appeared once a session actually encoded at
   // 48 kHz. 16 KB leaves real headroom. If the heap is too tight for this,
   // task creation logs the failure instead of silently running without audio.
+  //
+  // [encode-stack-32k] 16 KB ALSO overflowed, on the same path, at
+  // 48 kHz / 20 ms / stereo. Why it is so much bigger than it looks:
+  //   * esp32_opus's config.h defines USE_ALLOCA, not NONTHREADSAFE_PSEUDOSTACK.
+  //     Every VARDECL/ALLOC in libopus is therefore a real alloca() ON THIS
+  //     TASK'S STACK, not an allocation out of opus_alloc_scratch()'s 120 KB
+  //     pseudostack. The "opus only needs 2-3 KB of stack" figure found in
+  //     libopus docs/forums applies to the pseudostack build. With alloca:
+  //       opus_encode_native   pcm_buf  (960+312)*2 int16  ~2.5 KB
+  //                            pcm_silk 960*2 int16        ~3.8 KB
+  //                            tmp_prefill 2*Fs/400 int16   ~0.2 KB
+  //                            ec_enc (alloca in ec_enc_init) ~0.3 KB
+  //       celt_encode_with_ec (frame 960)                    ~6-8 KB
+  //       run_prefilter + dynalloc_analysis + transient/tf   ~1.5 KB
+  //       analysis.c tonality_analysis (downmix + 480-pt FFT) ~3.2 KB
+  //       plus FreeRTOS saved context (~0.6 KB) and LOGI/printf
+  //       transient usage deeper down                          ~1 KB
+  //     = 18-21 KB worst case, so 16 KB is still ~3 KB short. A stack canary
+  //     watchpoint in run_prefilter (called from celt_encode_with_ec) is
+  //     exactly what that looks like. Do not shrink this again without
+  //     reading the ALLOC() sites in opus_encoder.c / celt_encoder.c /
+  //     analysis.c first.
+  //
+  // The real fix belongs in the opus library, not here: build libopus with
+  // NONTHREADSAFE_PSEUDOSTACK instead of USE_ALLOCA (remove `#define
+  // USE_ALLOCA` from esp32_opus/src/config.h, add `#define
+  // NONTHREADSAFE_PSEUDOSTACK`, and make sure CELT_C is defined for exactly
+  // one TU - celt_encoder.c already is). That moves all of the above into
+  // opus_alloc_scratch()'s static 120 KB buffer and the task could go back
+  // to 4-8 KB. Only one opus_encode/opus_decode may run at a time in that
+  // mode, which is already true here (one encoder, one task).
+  //
+  // 24 KB is the current size (ENCODE_STACK_BYTES in the .ino) and it is
+  // taken from INTERNAL DRAM, not left to the FreeRTOS port - see
+  // [encode-stack-pinned] in setup_queues_and_tasks(). The earlier 16 KB and
+  // 32 KB bumps both changed only this number and both still crashed with the
+  // same backtrace: on this N16R8 build the port allocates task stacks with
+  // MALLOC_CAP_SPIRAM, so the "32 KB" stack may never have been internal at
+  // all. If the canary fires again, check the boot log for the
+  // "audioEncode task: N B stack from INTERNAL DRAM (static)" line before
+  // changing this number.
   static EncodeFrame ef;
   static OpusPacket pkt;
 
@@ -1623,8 +1664,45 @@ inline void setup_queues_and_tasks() {
 
   // [core-assign-audioread] Core 1: audioRead(6) + audioEncode(5). Nothing
   // else may be added to this core - see the rationale block above.
-  rc = xTaskCreatePinnedToCore(audioEncodeTask, "audioEncode", 16384, nullptr, 5, nullptr, 1);
-  if (rc != pdPASS) LOGE("FAILED to create audioEncodeTask (rc=%d)", (int)rc);
+  // [encode-stack-pinned] THE ENCODER STACK MUST BE MALLOC'D EXPLICITLY.
+  // Do NOT go back to xTaskCreatePinnedToCore()'s stack-depth argument for
+  // this task. This SDK is built with
+  //   CONFIG_SPIRAM_USE_MALLOC=1
+  //   CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=1
+  //   CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+  // and build_opt.h forces -DCONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=65536. With
+  // allow-ext-mem on, every task stack is allocated by pxPortInitialiseStack()
+  // -> heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT), i.e. in
+  // PSRAM for anything over the always-internal threshold. The CPU has no
+  // stack guard for an external stack (esp_stack_ptr_in_extram() only covers
+  // the transition), and the alloca-heavy libopus encoder running on PSRAM is
+  // fragile. So the encoder stack is taken from INTERNAL DRAM here and handed
+  // to xTaskCreateStaticPinnedToCore(); the static TCB is internal too.
+  // Note the order matters: on failure we fall back to a plain pinned create
+  // and say so in the log, because running on a PSRAM stack is still better
+  // than no audio at all.
+  static StaticTask_t s_encodeTcb;
+  static StackType_t *s_encodeStack = nullptr;
+  if (s_encodeStack == nullptr) {
+    s_encodeStack = (StackType_t *)heap_caps_malloc(ENCODE_STACK_BYTES,
+                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+  if (s_encodeStack != nullptr) {
+    TaskHandle_t h = xTaskCreateStaticPinnedToCore(audioEncodeTask, "audioEncode",
+                                                   ENCODE_STACK_BYTES, nullptr, 5,
+                                                   s_encodeStack, &s_encodeTcb, 1);
+    if (h == nullptr) {
+      LOGE("FAILED to create audioEncodeTask from static internal stack");
+    } else {
+      LOGI("audioEncode task: %u B stack from INTERNAL DRAM (static)", (unsigned)ENCODE_STACK_BYTES);
+    }
+  } else {
+    LOGE("audioEncode: %u B internal DRAM unavailable; falling back to a "
+         "PSRAM-eligible stack (may run in PSRAM)", (unsigned)ENCODE_STACK_BYTES);
+    rc = xTaskCreatePinnedToCore(audioEncodeTask, "audioEncode", ENCODE_STACK_BYTES,
+                                 nullptr, 5, nullptr, 1);
+    if (rc != pdPASS) LOGE("FAILED to create audioEncodeTask (rc=%d)", (int)rc);
+  }
 
   LOGI("Tasks created: udpSend(c0,p3) audioProc(c0,p2) clockSync(c0,p3) "
        "loop(c0) dlnaSsdp(c0,p2) dlnaFetch(c0,p2) | "

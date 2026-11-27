@@ -29,6 +29,16 @@ inline void sendReceiverSourceCommand(const String &source) {
   if (!lockFor(uartMutex, 50)) return;
   receiverUart.print('\n');
   receiverUart.printf("SRC:%s\n", source.c_str());
+  // [src-heartbeat-force-reply]
+  // SRC: alone is fire-and-forget: the source's setActiveSource() only logs
+  // and, when it is already on that input, answers with a LOG| line — never
+  // with SRCSTAT|. Without a SRCSTAT the server's lastHeartbeatMsCache is
+  // not refreshed, so /api/source/info reports "link":false for the rest of
+  // the session and a source that booted on a different input than the
+  // server's persisted boot source looks unreachable even though its LOG|
+  // lines arrive on the same UART. GET_BT_DEVICES makes it emit
+  // BT_JSON| + SRCSTAT| immediately.
+  receiverUart.printf("CMD:GET_BT_DEVICES\n");
   unlockFor(uartMutex);
 }
 inline void sendReceiverCommand(const String &cmdIn) {
@@ -181,6 +191,8 @@ inline bool setReceiverSource(const String &source, String &respBody, uint16_t &
   }
   receiverUart.print('\n');
   receiverUart.printf("SRC:%s\n", source.c_str());
+  // [src-heartbeat-force-reply] Same reason as sendReceiverSourceCommand().
+  receiverUart.printf("CMD:GET_BT_DEVICES\n");
   receiverSource     = source;
   lastReceiverSource = source;
   unlockFor(uartMutex);

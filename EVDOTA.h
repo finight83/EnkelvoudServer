@@ -1049,6 +1049,22 @@ static void handleOtaApply(AsyncWebServerRequest *request, uint8_t *data,
       }
     }
     delete j;
+    // [ota-source-bt-restore]
+    // A source-board OTA reboots the source into its boot default source
+    // (BT), while the server keeps whatever source it had. If the server was
+    // on USB at the time, the server stays on its own UAC input and the
+    // freshly-booted source's BT audio goes nowhere — "audio works over USB
+    // but not Bluetooth" right after an update. Re-assert the source the
+    // server is actually streaming from so both ends agree again. Cheap and
+    // idempotent: if they already agree, the source logs "already X".
+    if (j->doSource && !j->doServer) {
+      if (bootSourceIdx == 2) {
+        LOGI("Source OTA done: server boot source is USB; source board left on BT");
+      } else {
+        sendReceiverSourceCommand(String(bootSourceCStr()));
+        LOGI("Source OTA done: re-asserted SRC:%s on the source board", bootSourceCStr());
+      }
+    }
     // [ota-job-epilogue-mutex] CRIT-3: handleOtaStatus (Core 0) reads
     // otaInProgress / otaPauseAudio under otaMutex. A naked write here can
     // land mid-snapshot and produce a half-cleared state that leaves one

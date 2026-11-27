@@ -1,7 +1,28 @@
 // ---- Versioning ------------------------------------------------------------
 // Always update this field with latest patch updates
 #ifndef EVD_FW_VERSION
-#define EVD_FW_VERSION "3.9.4.6"
+#define EVD_FW_VERSION "3.9.4.10"
+// 3.9.4.10: source-board link honesty + BT/USB disagreement after a source
+//          OTA. SRC:<x> is now always followed by CMD:GET_BT_DEVICES, so the
+//          source answers with SRCSTAT and lastHeartbeatMsCache stops ageing
+//          out (/api/source/info no longer reports link:false while the
+//          source is clearly logging). A source-only OTA re-asserts the
+//          server's boot source afterwards: the source reboots into BT while
+//          the server may be on its own USB input, which is exactly
+//          "USB works, Bluetooth doesn't" after an update.
+// 3.9.4.9: audioEncode stack is now 24 KB and comes from INTERNAL DRAM via
+//          xTaskCreateStaticPinnedToCore. The 3.9.4.3 (16 KB) and 3.9.4.8
+//          (32 KB) bumps only changed the depth argument and both still hit
+//          "Stack canary watchpoint triggered (audioEncode)" with the same
+//          backtrace: this SDK has CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM,
+//          so the port allocates task stacks with MALLOC_CAP_SPIRAM and the
+//          encoder stack was not guaranteed internal. Boot log now prints
+//          "audioEncode task: 24576 B stack from INTERNAL DRAM (static)".
+// 3.9.4.8: audioEncode task stack 16 KB -> 32 KB. The 16 KB bump in 3.9.4.3
+//          was still too small: esp32_opus builds libopus with USE_ALLOCA, so
+//          every opus_encode VARDECL lands on the task stack (18-21 KB for a
+//          48 kHz stereo frame), and the canary tripped in run_prefilter
+//          again. See [encode-stack-budget] in EnkelvoudServer.ino.
 // 3.9.4.4: peer beacons carry the fleet node list; a standby displays the
 //          leader's nodes and, on takeover, sends server_ready to them so the
 //          failover is instant instead of waiting for node re-discovery.
@@ -288,6 +309,8 @@ static const char *SETTINGS_VERSION = "v2.0.7";
 #include <cmath>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
+#include <esp_heap_caps.h>
 #include <driver/i2s.h>
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
@@ -415,7 +438,17 @@ const char *default_ap_password       = "";
 // (core 1) produces one frame per ~20 ms; audioEncode (core 0) drains it.
 // 4 gives 80 ms of preemption slack for the encoder against WiFi bursts.
 #define ENCODE_QUEUE_LEN 4
-
+// [encode-stack-budget] audioEncode task stack, in bytes, allocated from
+// INTERNAL DRAM in setup_queues_and_tasks(). Budget for one 20 ms frame at
+// 48 kHz stereo, all on the stack because esp32_opus builds libopus with
+// USE_ALLOCA (config.h) rather than NONTHREADSAFE_PSEUDOSTACK:
+//   opus_encode_native  pcm_buf ~2.5K + pcm_silk ~3.8K + tmp_prefill + ec_enc
+//   celt_encode_with_ec ~6-8K, run_prefilter + dynalloc ~1.5K,
+//   tonality_analysis (FFT + downmix) ~3.2K, FreeRTOS context ~0.6K,
+//   printf/LOGI depth ~1K  =>  ~18-21 KB worst case.
+// 24576 leaves ~3 KB headroom over the worst case; it is NOT the 8 KB the
+// old comment claimed. Do not shrink without re-reading the ALLOC() sites.
+#define ENCODE_STACK_BYTES 24576
 // ---- UDP transport ---------------------------------------------------------
 #define AUDIO_UDP_PORT      4202
 #define CTRL_UDP_PORT       4203
@@ -613,5 +646,6 @@ inline void handleClockSyncRequests();
 #include "EVDPeers.h"
 #include "EVDRoutes.h"
 #include "EVDMain.h"
+
 
 
